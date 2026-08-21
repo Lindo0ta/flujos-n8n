@@ -1,0 +1,213 @@
+{
+  "name": "AVA - Ingesta ISO 9001",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "7e483085-5631-42d5-a398-350243640988",
+      "name": "Trigger Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -112,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// DESCARGAR PDF ISO 9001 DESDE BACKBLAZE B2\n// API nativa B2 — sin crypto, solo btoa()\n// ============================================\n\nconst B2_KEY_ID  = $env.B2_KEY_ID;\nconst B2_APP_KEY = $env.B2_APP_KEY;\nconst B2_BUCKET  = $env.B2_BUCKET;\nconst FILE_KEY   = 'NOM_ISO_9001-2015.pdf';\n\nconst credentials = btoa(`${B2_KEY_ID}:${B2_APP_KEY}`);\n\nconst authResponse = await this.helpers.httpRequest({\n  method: 'GET',\n  url: 'https://api.backblazeb2.com/b2api/v3/b2_authorize_account',\n  headers: { 'Authorization': `Basic ${credentials}` },\n  json: true\n});\n\nconst authToken   = authResponse.authorizationToken;\nconst downloadUrl = authResponse.apiInfo.storageApi.downloadUrl;\n\nconsole.log(`✅ Auth OK — descargando ${FILE_KEY}...`);\n\nconst response = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${downloadUrl}/file/${B2_BUCKET}/${FILE_KEY}`,\n  headers: { 'Authorization': authToken },\n  encoding: 'arraybuffer',\n  returnFullResponse: true\n});\n\nif (response.statusCode !== 200) {\n  throw new Error(`Error al descargar de B2: ${response.statusCode} - ${JSON.stringify(response.body).slice(0,300)}`);\n}\n\nconsole.log(`✅ PDF descargado: ${response.body.byteLength} bytes`);\n\nreturn [{\n  json: { fileName: FILE_KEY },\n  binary: {\n    data: await this.helpers.prepareBinaryData(\n      Buffer.from(response.body),\n      FILE_KEY,\n      'application/pdf'\n    )\n  }\n}];\n"
+      },
+      "id": "0467a213-8fbe-438d-a161-a977bcd5c4fc",
+      "name": "📥 Descargar PDF ISO desde BackBlaze B2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        112,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "id": "05aa6032-05c9-4f9f-849d-e8dd4739f271",
+      "name": "📄 Extraer Texto del PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        336,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// PASO 1: CONCATENAR TODAS LAS PÁGINAS Y LIMPIAR\n// extractFromFile devuelve 1 item por página — hay que unirlas\n// ============================================\n\nconst allItems = $input.all();\n\nconsole.log(`📄 Páginas recibidas: ${allItems.length}`);\n\n// Concatenar texto de todas las páginas en orden\nconst fullText = allItems\n  .map(item => item.json.text || '')\n  .join('\\n\\n')\n  .replace(/\\r\\n/g, '\\n')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .replace(/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]/g, '')\n  .trim();\n\nif (!fullText || fullText.length < 100) {\n  throw new Error('No se pudo extraer texto del PDF o el archivo está vacío');\n}\n\nconsole.log(`✅ Texto total concatenado: ${fullText.length} caracteres`);\nconsole.log(`📊 Páginas procesadas: ${allItems.length}`);\n\n// Retornar UN SOLO item con todo el texto\nreturn [{\n  json: {\n    fullText,\n    totalLength: fullText.length,\n    totalPages: allItems.length,\n    fileName: 'NOM_ISO_9001-2015',\n    extractedAt: new Date().toISOString()\n  }\n}];\n"
+      },
+      "id": "81461e65-1d59-488a-ae67-8476be15f3f7",
+      "name": "🧹 Limpiar Texto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// DIVIDIR EN CHUNKS - chunkSize 800\n// ============================================\n\nconst text = $input.item.json.fullText;\nconst totalPages = $input.item.json.totalPages || 42;\n\nconsole.log(`📄 Texto recibido: ${text.length} caracteres, ${totalPages} páginas`);\n\nconst chunkSize = 800;\nconst overlap   = 120;\n\nfunction simpleHash(str) {\n  let hash = 0;\n  for (let i = 0; i < str.length; i++) {\n    const char = str.charCodeAt(i);\n    hash = ((hash << 5) - hash) + char;\n    hash = hash & hash;\n  }\n  return Math.abs(hash).toString(16);\n}\n\nfunction detectClausula(texto) {\n  const match = texto.match(/\\b(\\d+\\.\\d+(?:\\.\\d+)?)\\s+([^\\n]{5,100})/i);\n  if (match) return { clausula: match[1], titulo: match[2].trim() };\n  return { clausula: null, titulo: null };\n}\n\nfunction detectTipoRequisito(texto) {\n  if (/\\b(debe|deberá|tienen que|es necesario que)\\b/i.test(texto)) return 'shall';\n  if (/\\b(debería|sería conveniente|es recomendable|se recomienda)\\b/i.test(texto)) return 'should';\n  if (/\\b(puede|pueden|es posible|está permitido)\\b/i.test(texto)) return 'can';\n  return 'informativo';\n}\n\n// Dividir por párrafos Y por saltos de línea simples si los párrafos son muy largos\nconst chunks = [];\nlet currentChunk = '';\nlet lastClausula = null;\nlet lastTitulo = null;\n\n// Primero intentar split por doble salto\nlet segments = text.split(/\\n\\n+/);\n\n// Si hay muy pocos segmentos (PDF con poco espaciado), usar salto simple también\nif (segments.length < 50) {\n  console.log(`⚠️ Pocos párrafos (${segments.length}), usando salto simple también`);\n  segments = text.split(/\\n+/);\n}\n\nconsole.log(`📊 Segmentos para procesar: ${segments.length}`);\n\nfor (let i = 0; i < segments.length; i++) {\n  const segment = segments[i].trim();\n  if (!segment || segment.length < 5) continue;\n\n  const clausulaInfo = detectClausula(segment);\n  if (clausulaInfo.clausula) {\n    lastClausula = clausulaInfo.clausula;\n    lastTitulo   = clausulaInfo.titulo;\n  }\n\n  // Si el segmento solo ya supera chunkSize, dividirlo por palabras\n  if (segment.length > chunkSize) {\n    // Primero guardar lo que había acumulado\n    if (currentChunk.trim()) {\n      chunks.push({\n        contenido:       currentChunk.trim(),\n        clausula:        lastClausula,\n        titulo_clausula: lastTitulo,\n        tipo_requisito:  detectTipoRequisito(currentChunk)\n      });\n      currentChunk = '';\n    }\n    // Dividir el segmento largo en sub-chunks por palabras\n    const words = segment.split(' ');\n    let subChunk = '';\n    for (const word of words) {\n      if (subChunk.length + word.length + 1 > chunkSize && subChunk.length > 0) {\n        chunks.push({\n          contenido:       subChunk.trim(),\n          clausula:        lastClausula,\n          titulo_clausula: lastTitulo,\n          tipo_requisito:  detectTipoRequisito(subChunk)\n        });\n        subChunk = subChunk.slice(-overlap) + ' ' + word;\n      } else {\n        subChunk += (subChunk ? ' ' : '') + word;\n      }\n    }\n    if (subChunk.trim()) currentChunk = subChunk;\n    continue;\n  }\n\n  if (currentChunk.length + segment.length + 2 > chunkSize && currentChunk.length > 0) {\n    chunks.push({\n      contenido:       currentChunk.trim(),\n      clausula:        lastClausula,\n      titulo_clausula: lastTitulo,\n      tipo_requisito:  detectTipoRequisito(currentChunk)\n    });\n    currentChunk = currentChunk.slice(-overlap) + '\\n' + segment;\n  } else {\n    currentChunk += (currentChunk ? '\\n' : '') + segment;\n  }\n}\n\nif (currentChunk.trim()) {\n  chunks.push({\n    contenido:       currentChunk.trim(),\n    clausula:        lastClausula,\n    titulo_clausula: lastTitulo,\n    tipo_requisito:  detectTipoRequisito(currentChunk)\n  });\n}\n\nconst totalChunks = chunks.length;\nconsole.log(`✅ Total chunks generados: ${totalChunks}`);\nconsole.log(`📊 Con cláusula: ${chunks.filter(c => c.clausula).length}`);\nconsole.log(`📏 Promedio chars por chunk: ${Math.round(chunks.reduce((a,c) => a + c.contenido.length, 0) / totalChunks)}`);\n\nreturn chunks.map((chunk, idx) => ({\n  json: {\n    contenido:        chunk.contenido,\n    chunk_index:      idx,\n    total_chunks:     totalChunks,\n    clausula:         chunk.clausula || 'sin_clasificar',\n    titulo_clausula:  chunk.titulo_clausula || '',\n    nivel_clausula:   chunk.clausula ? chunk.clausula.split('.').length : 0,\n    tipo_requisito:   chunk.tipo_requisito,\n    pagina:           Math.floor(idx / totalChunks * totalPages) + 1,\n    version_norma:    '2015',\n    hash_contenido:   simpleHash(chunk.contenido + idx.toString()),\n    creado_por:       'sistema_ingesta',\n    documento_origen: 'NOM_ISO_9001-2015'\n  }\n}));\n"
+      },
+      "id": "c937598e-bd6b-4af8-b965-3a34ccc445d9",
+      "name": "✂️ Dividir en Chunks Inteligentes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        784,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// GENERAR EMBEDDINGS - OpenAI text-embedding-3-small (1536 dims)\n// Mismo modelo usado en el flujo de capacitacion AVA\n// ============================================\n\nconst OPENAI_API_KEY = $env.OPENAI_API_KEY;\n\nconst items = $input.all();\nconst results = [];\n\nconsole.log(`🔄 Procesando ${items.length} chunks con OpenAI text-embedding-3-small...`);\n\n// Procesar en lotes de 20 para no saturar la API\nconst BATCH_SIZE = 20;\n\nfor (let batchStart = 0; batchStart < items.length; batchStart += BATCH_SIZE) {\n  const batch = items.slice(batchStart, batchStart + BATCH_SIZE);\n  const textos = batch.map(item => item.json.contenido || '');\n\n  // Filtrar vacíos pero mantener índices\n  const validBatch = batch.filter(item => (item.json.contenido || '').length >= 10);\n  const validTextos = validBatch.map(item => item.json.contenido);\n\n  if (validTextos.length === 0) continue;\n\n  console.log(`📦 Lote ${Math.floor(batchStart / BATCH_SIZE) + 1}: ${validTextos.length} chunks (${batchStart + 1}-${Math.min(batchStart + BATCH_SIZE, items.length)} de ${items.length})`);\n\n  try {\n    const response = await this.helpers.httpRequest({\n      method: 'POST',\n      url: 'https://api.openai.com/v1/embeddings',\n      headers: {\n        'Content-Type': 'application/json',\n        'Authorization': `Bearer ${OPENAI_API_KEY}`\n      },\n      body: {\n        input: validTextos,\n        model: 'text-embedding-3-small'\n        // Sin 'dimensions' -> salida nativa de 1536 dims\n      },\n      json: true\n    });\n\n    // response.data es un array ordenado igual que validTextos\n    for (let i = 0; i < validBatch.length; i++) {\n      const item = validBatch[i].json;\n      const embedding = response.data[i].embedding; // array de 1536 floats\n      const embeddingVector = '[' + embedding.join(',') + ']';\n\n      results.push({\n        json: {\n          contenido:       item.contenido,\n          embedding_vector: embeddingVector,\n          clausula:        item.clausula || 'sin_clasificar',\n          titulo_clausula: item.titulo_clausula || '',\n          nivel_clausula:  item.nivel_clausula || 0,\n          tipo_requisito:  item.tipo_requisito || 'informativo',\n          version_norma:   item.version_norma || '2015',\n          pagina:          item.pagina || 0,\n          chunk_index:     item.chunk_index || 0,\n          total_chunks:    item.total_chunks || 0,\n          hash_contenido:  item.hash_contenido || '',\n          creado_por:      item.creado_por || 'sistema_ingesta'\n        }\n      });\n    }\n\n    console.log(`✅ Lote completado — ${results.length} embeddings generados hasta ahora`);\n\n    // Pausa breve entre lotes para respetar rate limits\n    if (batchStart + BATCH_SIZE < items.length) {\n      await new Promise(resolve => setTimeout(resolve, 200));\n    }\n\n  } catch (error) {\n    console.error(`❌ Error en lote ${Math.floor(batchStart / BATCH_SIZE) + 1}:`, error.message);\n    // Intentar chunk a chunk si el lote falla\n    console.log('🔁 Reintentando chunk a chunk...');\n    for (const item of validBatch) {\n      try {\n        const r = await this.helpers.httpRequest({\n          method: 'POST',\n          url: 'https://api.openai.com/v1/embeddings',\n          headers: {\n            'Content-Type': 'application/json',\n            'Authorization': `Bearer ${OPENAI_API_KEY}`\n          },\n          body: { input: [item.json.contenido], model: 'text-embedding-3-small' },\n          json: true\n        });\n        const embedding = r.data[0].embedding;\n        results.push({\n          json: {\n            contenido:       item.json.contenido,\n            embedding_vector: '[' + embedding.join(',') + ']',\n            clausula:        item.json.clausula || 'sin_clasificar',\n            titulo_clausula: item.json.titulo_clausula || '',\n            nivel_clausula:  item.json.nivel_clausula || 0,\n            tipo_requisito:  item.json.tipo_requisito || 'informativo',\n            version_norma:   item.json.version_norma || '2015',\n            pagina:          item.json.pagina || 0,\n            chunk_index:     item.json.chunk_index || 0,\n            total_chunks:    item.json.total_chunks || 0,\n            hash_contenido:  item.json.hash_contenido || '',\n            creado_por:      item.json.creado_por || 'sistema_ingesta'\n          }\n        });\n        await new Promise(resolve => setTimeout(resolve, 100));\n      } catch (err) {\n        console.error(`❌ Fallo individual chunk ${item.json.chunk_index}:`, err.message);\n      }\n    }\n  }\n}\n\nconsole.log(`\\n🎉 Procesados ${results.length}/${items.length} chunks exitosamente`);\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        -144
+      ],
+      "id": "cc4b4a78-26b1-41d7-8b0d-311711ceed7c",
+      "name": "🤖 Generar Embeddings con OpenAI"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================\n// INSERTAR EN SUPABASE — INSERT con ignore duplicates\n// Tabla: iso9001_norma_duplicate (embedding vector(1536))\n// ============================================\n\nconst SUPABASE_URL = $env.SUPABASE_URL;\nconst SUPABASE_KEY = $env.SUPABASE_KEY;\n\nconst item = $input.item.json;\n\nconsole.log(`💾 Insertando chunk ${item.chunk_index}/${item.total_chunks} — cláusula: ${item.clausula}`);\n\ntry {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${SUPABASE_URL}/rest/v1/iso9001_norma`,\n    headers: {\n      'Content-Type': 'application/json',\n      'apikey': SUPABASE_KEY,\n      'Authorization': `Bearer ${SUPABASE_KEY}`,\n      'Prefer': 'resolution=ignore-duplicates,return=minimal'\n    },\n    body: {\n      contenido:       item.contenido,\n      embedding:       item.embedding_vector,\n      clausula:        item.clausula,\n      titulo_clausula: item.titulo_clausula,\n      nivel_clausula:  item.nivel_clausula,\n      tipo_requisito:  item.tipo_requisito,\n      version_norma:   item.version_norma,\n      pagina:          item.pagina,\n      chunk_index:     item.chunk_index,\n      total_chunks:    item.total_chunks,\n      hash_contenido:  item.hash_contenido,\n      creado_por:      item.creado_por\n    },\n    json: true\n  });\n\n  console.log(`✅ Chunk ${item.chunk_index} insertado`);\n  return { json: { success: true, chunk_index: item.chunk_index, clausula: item.clausula } };\n\n} catch (error) {\n  console.error(`⚠️ Error chunk ${item.chunk_index}: ${error.message}`);\n  return { json: { success: false, chunk_index: item.chunk_index, error: error.message } };\n}\n"
+      },
+      "id": "1c760a46-df11-480d-82eb-c91c57f105a1",
+      "name": "💾 Insertar en Supabase",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1232,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// RESUMEN FINAL DE INGESTA\n// ============================================\n\nconst allItems = $input.all();\nconst insertados = allItems.filter(item => item.json && item.json.success).length;\n\nconst clausulasUnicas = [...new Set(\n  allItems\n    .map(item => item.json.clausula)\n    .filter(c => c && c !== 'sin_clasificar')\n)];\n\nconst porTipoRequisito = allItems.reduce((acc, item) => {\n  const tipo = item.json.tipo_requisito || 'desconocido';\n  acc[tipo] = (acc[tipo] || 0) + 1;\n  return acc;\n}, {});\n\nconst resumen = {\n  total_chunks: allItems.length,\n  chunks_insertados: insertados,\n  chunks_con_error: allItems.length - insertados,\n  clausulas_identificadas: clausulasUnicas.length,\n  lista_clausulas: clausulasUnicas.sort(),\n  distribucion_requisitos: porTipoRequisito,\n  timestamp: new Date().toISOString(),\n  archivo: 'NOM_ISO_9001-2015',\n  fuente: 'BackBlaze B2 (uniminuto-docs)',\n  modelo_embeddings: 'text-embedding-3-small',\n  dimensiones_embedding: 1536\n};\n\nconsole.log('\\n📊 RESUMEN DE INGESTA ISO 9001:2015');\nconsole.log('=====================================');\nconsole.log(`✅ Chunks insertados: ${insertados}/${allItems.length}`);\nconsole.log(`📝 Cláusulas identificadas: ${clausulasUnicas.length}`);\nconsole.log(`⚡ Requisitos 'shall': ${porTipoRequisito.shall || 0}`);\nconsole.log(`💡 Requisitos 'should': ${porTipoRequisito.should || 0}`);\nconsole.log(`ℹ️  Informativos: ${porTipoRequisito.informativo || 0}`);\nconsole.log(`🧠 Modelo: text-embedding-3-small (1536 dims)`);\n\nreturn [{ json: resumen }];"
+      },
+      "id": "ee92bc9c-d466-457d-aa1a-a7aada46ad96",
+      "name": "📊 Generar Resumen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1456,
+        -144
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger Manual": {
+      "main": [
+        [
+          {
+            "node": "📥 Descargar PDF ISO desde BackBlaze B2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📥 Descargar PDF ISO desde BackBlaze B2": {
+      "main": [
+        [
+          {
+            "node": "📄 Extraer Texto del PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📄 Extraer Texto del PDF": {
+      "main": [
+        [
+          {
+            "node": "🧹 Limpiar Texto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧹 Limpiar Texto": {
+      "main": [
+        [
+          {
+            "node": "✂️ Dividir en Chunks Inteligentes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✂️ Dividir en Chunks Inteligentes": {
+      "main": [
+        [
+          {
+            "node": "🤖 Generar Embeddings con OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🤖 Generar Embeddings con OpenAI": {
+      "main": [
+        [
+          {
+            "node": "💾 Insertar en Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💾 Insertar en Supabase": {
+      "main": [
+        [
+          {
+            "node": "📊 Generar Resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "7f328f1c-a8de-4b08-ae5c-9856b1b2b640",
+  "meta": {
+    "instanceId": "1239598fa81151e9c1db43f6fbe7ac97b8cdaf9251daf9602f3cafee39625514"
+  },
+  "id": "TSErqj8Rj6ghe5Tq",
+  "tags": [
+    {
+      "updatedAt": "2026-05-20T20:39:19.519Z",
+      "createdAt": "2026-05-20T20:39:19.519Z",
+      "id": "JxgnvBINM9R5RUce",
+      "name": "AVA"
+    },
+    {
+      "updatedAt": "2026-05-20T21:56:35.126Z",
+      "createdAt": "2026-05-20T21:56:35.126Z",
+      "id": "E5djd6k75zz7RQiY",
+      "name": "Ingesta"
+    }
+  ]
+}

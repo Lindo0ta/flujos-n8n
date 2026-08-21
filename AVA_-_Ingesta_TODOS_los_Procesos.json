@@ -1,0 +1,377 @@
+{
+  "name": "AVA - Ingesta TODOS los Procesos (Backblaze + Jina)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "cb8ec1c1-e648-4d1d-94b1-bce0a79aa6fb",
+      "name": "Trigger Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        -576
+      ]
+    },
+    {
+      "id": "d3b08e6e-6ea6-4325-a939-af261773f46d",
+      "name": "⚙️ Config - Todos los Procesos",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        224,
+        -576
+      ],
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// ============================================\n// CONFIG - TODOS LOS PROCESOS\n// Emite un item por cada proceso/carpeta a procesar.\n// Conecta directamente con \"📋 Listar PDFs en Backblaze\".\n// Para agregar/quitar procesos, solo edita este array.\n// ============================================\n\nconst PROCESOS = [\n  {\n    proceso_nombre: 'Investigación',\n    codigo_proceso:  'INV-01',\n    audit_scope:     '2025',\n    b2_prefix:       'Procesos UNIMINUTO/01_Investigación/'\n  },\n  {\n    proceso_nombre: 'Proyección Social',\n    codigo_proceso:  'PS-01',\n    audit_scope:     '2025',\n    b2_prefix:       'Procesos UNIMINUTO/02_Proyección_Social/'\n  },\n  {\n    proceso_nombre: 'Docencia',\n    codigo_proceso:  'DC-01',\n    audit_scope:     '2025',\n    b2_prefix:       'Procesos UNIMINUTO/03_Docencia/'\n  },\n  {\n    proceso_nombre: 'Gestión Administrativa y Financiera',\n    codigo_proceso:  'GAF-01',\n    audit_scope:     '2025',\n    b2_prefix:       'Procesos UNIMINUTO/Gestión Administrativa y Financiera/'\n  },\n  {\n    proceso_nombre: 'Gestión de Mercadeo y Posicionamiento',\n    codigo_proceso:  'GMP-01',\n    audit_scope:     '2025',\n    b2_prefix:       'Procesos UNIMINUTO/Gestión de Mercadeo y Posicionamiento/'\n  }\n];\n\nconsole.log(`🚀 Iniciando ingesta de ${PROCESOS.length} procesos...`);\nPROCESOS.forEach((p, i) => console.log(`  ${i+1}. ${p.proceso_nombre} → ${p.b2_prefix}`));\n\nreturn PROCESOS.map(p => ({ json: p }));\n"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// LISTAR PDFs EN BACKBLAZE B2\n// Lee todos los archivos del prefijo (carpeta) configurado\n// ============================================\n\nconst B2_KEY_ID  = $env.B2_KEY_ID;\nconst B2_APP_KEY = $env.B2_APP_KEY;\nconst B2_BUCKET  = $env.B2_BUCKET;       // ej: uniminuto-docs\nconst B2_REGION  = $env.B2_REGION;       // ej: us-west-004\n\n// El Config node pasa: proceso_nombre, codigo_proceso, audit_scope, b2_prefix\nconst config     = $input.first().json;\nconst prefix     = config.b2_prefix || '';\nconst auditScope = config.audit_scope || '2025';\n\nconst crypto = require('crypto');\n\nfunction sha256hex(data) {\n  return crypto.createHash('sha256').update(data, 'utf8').digest('hex');\n}\nfunction hmacSha256(key, data) {\n  return crypto.createHmac('sha256', key).update(data, 'utf8').digest();\n}\nfunction getSigningKey(secretKey, dateOnly, region, service) {\n  const kDate    = hmacSha256('AWS4' + secretKey, dateOnly);\n  const kRegion  = hmacSha256(kDate, region);\n  const kService = hmacSha256(kRegion, service);\n  return hmacSha256(kService, 'aws4_request');\n}\n\nconst now       = new Date();\nconst dateStr   = now.toISOString().replace(/[:\\-]|\\.\\d{3}/g, '').slice(0, 15) + 'Z';\nconst dateOnly  = dateStr.slice(0, 8);\nconst host      = `s3.${B2_REGION}.backblazeb2.com`;\nconst endpoint  = `https://${host}`;\n\n// S3 ListObjectsV2\nconst queryString = 'list-type=2&prefix=' + encodeURIComponent(prefix).replace(/%2F/g, '/');\nconst payloadHash = sha256hex('');\nconst canonicalHeaders = `host:${host}\\nx-amz-content-sha256:${payloadHash}\\nx-amz-date:${dateStr}\\n`;\nconst signedHeaders    = 'host;x-amz-content-sha256;x-amz-date';\n\nconst canonicalRequest = [\n  'GET',\n  `/${B2_BUCKET}`,\n  queryString,\n  canonicalHeaders,\n  signedHeaders,\n  payloadHash\n].join('\\n');\n\nconst credentialScope = `${dateOnly}/${B2_REGION}/s3/aws4_request`;\nconst stringToSign = [\n  'AWS4-HMAC-SHA256',\n  dateStr,\n  credentialScope,\n  sha256hex(canonicalRequest)\n].join('\\n');\n\nconst signingKey = getSigningKey(B2_APP_KEY, dateOnly, B2_REGION, 's3');\nconst signature  = crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');\nconst authHeader = `AWS4-HMAC-SHA256 Credential=${B2_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;\n\nconst response = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${endpoint}/${B2_BUCKET}?${queryString}`,\n  headers: {\n    'Host': host,\n    'x-amz-date': dateStr,\n    'x-amz-content-sha256': payloadHash,\n    'Authorization': authHeader\n  }\n});\n\n// Parsear XML de ListObjectsV2\nconst keys = [];\nconst matches = response.matchAll(/<Key>([^<]+\\.pdf)<\\/Key>/gi);\nfor (const m of matches) {\n  keys.push(m[1]);\n}\n\nconsole.log(`📁 Encontrados ${keys.length} PDFs en prefijo \"${prefix}\"`);\n\n// Detectar proceso/subproceso por nombre de archivo (misma lógica que antes)\nreturn keys.map(fileKey => {\n  const fileName = fileKey.toLowerCase();\n  let proceso = 'Desconocido';\n  let codigoProceso = 'N/A';\n\n  if (fileName.includes('[inv')) { proceso = 'Investigación'; codigoProceso = 'INV-01'; }\n  else if (fileName.includes('[ps')) { proceso = 'Proyección Social'; codigoProceso = 'PS-01'; }\n  else if (fileName.includes('[dc')) { proceso = 'Docencia'; codigoProceso = 'DC-01'; }\n  else if (fileName.includes('[gaf')) { proceso = 'Gestión Administrativa y Financiera'; codigoProceso = 'GAF-01'; }\n  else if (fileName.includes('[gmp')) { proceso = 'Gestión de Mercadeo y Posicionamiento'; codigoProceso = 'GMP-01'; }\n\n  const nameParts = fileKey.split('/');\n  const name = nameParts[nameParts.length - 1];\n\n  console.log(`📄 ${name} → ${proceso}`);\n\n  return {\n    json: {\n      fileKey,\n      name,\n      proceso,\n      codigo_proceso: codigoProceso,\n      audit_scope: auditScope\n    }\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        -576
+      ],
+      "id": "2feaccd3-39c4-4f43-87a7-3458b75cf263",
+      "name": "📋 Listar PDFs en Backblaze"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================\n// DESCARGAR PDF DESDE BACKBLAZE B2\n// Recibe: $json.fileKey, $json.name\n// ============================================\n\nconst B2_KEY_ID  = $env.B2_KEY_ID;\nconst B2_APP_KEY = $env.B2_APP_KEY;\nconst B2_BUCKET  = $env.B2_BUCKET;\nconst B2_REGION  = $env.B2_REGION;\n\nconst fileKey = $input.item.json.fileKey;\nconst name    = $input.item.json.name;\n\nconst crypto = require('crypto');\n\nfunction sha256hex(data) {\n  return crypto.createHash('sha256').update(data, 'utf8').digest('hex');\n}\nfunction hmacSha256(key, data) {\n  return crypto.createHmac('sha256', key).update(data, 'utf8').digest();\n}\nfunction getSigningKey(secretKey, dateOnly, region, service) {\n  const kDate    = hmacSha256('AWS4' + secretKey, dateOnly);\n  const kRegion  = hmacSha256(kDate, region);\n  const kService = hmacSha256(kRegion, service);\n  return hmacSha256(kService, 'aws4_request');\n}\n\nconst now      = new Date();\nconst dateStr  = now.toISOString().replace(/[:\\-]|\\.\\d{3}/g, '').slice(0, 15) + 'Z';\nconst dateOnly = dateStr.slice(0, 8);\nconst host     = `s3.${B2_REGION}.backblazeb2.com`;\n\nconst payloadHash      = sha256hex('');\nconst canonicalUri     = `/${B2_BUCKET}/${fileKey}`;\nconst canonicalHeaders = `host:${host}\\nx-amz-content-sha256:${payloadHash}\\nx-amz-date:${dateStr}\\n`;\nconst signedHeaders    = 'host;x-amz-content-sha256;x-amz-date';\n\nconst canonicalRequest = ['GET', canonicalUri, '', canonicalHeaders, signedHeaders, payloadHash].join('\\n');\nconst credentialScope  = `${dateOnly}/${B2_REGION}/s3/aws4_request`;\nconst stringToSign     = ['AWS4-HMAC-SHA256', dateStr, credentialScope, sha256hex(canonicalRequest)].join('\\n');\n\nconst signingKey = getSigningKey(B2_APP_KEY, dateOnly, B2_REGION, 's3');\nconst signature  = crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');\nconst authHeader = `AWS4-HMAC-SHA256 Credential=${B2_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;\n\nconsole.log(`📥 Descargando: ${fileKey}`);\n\nconst response = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `https://${host}${canonicalUri}`,\n  headers: {\n    'Host': host,\n    'x-amz-date': dateStr,\n    'x-amz-content-sha256': payloadHash,\n    'Authorization': authHeader\n  },\n  encoding: 'arraybuffer',\n  returnFullResponse: true\n});\n\nif (response.statusCode !== 200) {\n  throw new Error(`Error al descargar de B2: ${response.statusCode}`);\n}\n\nconsole.log(`✅ Descargado: ${name} (${response.body.byteLength} bytes)`);\n\nreturn [{\n  json: {\n    ...$input.item.json\n  },\n  binary: {\n    data: await this.helpers.prepareBinaryData(\n      Buffer.from(response.body),\n      name,\n      'application/pdf'\n    )\n  }\n}];\n"
+      },
+      "id": "289e1db4-f35d-4e99-87ae-389be90f5c37",
+      "name": "📥 Descargar cada PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        -576
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const fileName = ($input.item.json.name || '').toLowerCase();\nconst fileNameOriginal = $input.item.json.name || 'sin_nombre.pdf';\n\nconsole.log(`\\n========================================`);\nconsole.log(`📄 Archivo recibido: \"${fileNameOriginal}\"`);\nconsole.log(`📄 Nombre en lowercase: \"${fileName}\"`);\nconsole.log(`========================================\\n`);\n\nif (!fileName) {\n  throw new Error('El archivo no tiene nombre');\n}\n\nlet subproceso = '';\n\n// DOCUMENTOS GLOBALES (aplican a todos los procesos)\nif (fileName.includes('[global]') || fileName.includes('[gbl]')) {\n  subproceso = 'Global';\n  console.log('✅ Detectado: Documento Global');\n}\n\n// INVESTIGACIÓN\nelse if (fileName.includes('[inv-if]')) {\n  subproceso = 'Investigación Formativa';\n  console.log('✅ Detectado: Investigación Formativa');\n} else if (fileName.includes('[inv-idic]') || fileName.includes('[inv-i+d+i+c]')) {\n  subproceso = 'I+D+I+C';\n  console.log('✅ Detectado: I+D+I+C');\n} else if (fileName.includes('[inv-ge]')) {\n  subproceso = 'Gestión Editorial';\n  console.log('✅ Detectado: Gestión Editorial');\n} else if (fileName.includes('[inv-tct]')) {\n  subproceso = 'Transferencia de Conocimiento y Tecnología';\n  console.log('✅ Detectado: Transferencia de Conocimiento y Tecnología');\n}\n\n// PROYECCIÓN SOCIAL\nelse if (fileName.includes('[ps-ec]')) {\n  subproceso = 'Educación Continua';\n  console.log('✅ Detectado: Educación Continua');\n} else if (fileName.includes('[ps-gem]')) {\n  subproceso = 'Gestión de Empleabilidad';\n  console.log('✅ Detectado: Gestión de Empleabilidad');\n} else if (fileName.includes('[ps-ppl]')) {\n  subproceso = 'Práctica Profesional';\n  console.log('✅ Detectado: Práctica Profesional');\n} else if (fileName.includes('[ps-prs]')) {\n  subproceso = 'Práctica en Responsabilidad Social';\n  console.log('✅ Detectado: Práctica en Responsabilidad Social');\n} else if (fileName.includes('[ps-vlo]')) {\n  subproceso = 'Voluntariado';\n  console.log('✅ Detectado: Voluntariado');\n} else if (fileName.includes('[ps-reng]')) {\n  subproceso = 'Relacionamiento con Egresados y Egresados no Graduados';\n  console.log('✅ Detectado: Relacionamiento con Egresados y Egresados no Graduados');\n} else if (fileName.includes('[ps-art]')) {\n  subproceso = 'Articulación';\n  console.log('✅ Detectado: Articulación');\n} else if (fileName.includes('[ps-gde]')) {\n  subproceso = 'Gestión y Desarrollo del Emprendimiento';\n  console.log('✅ Detectado: Gestión y Desarrollo del Emprendimiento');\n} else if (fileName.includes('[ps]')) {\n  subproceso = 'General de Proyección Social';\n  console.log('✅ Detectado: General de Proyección Social');\n}\n\n// DOCENCIA\nelse if (fileName.includes('[dc-eae]')) {\n  subproceso = 'Enseñanza, Aprendizaje y Evaluación';\n  console.log('✅ Detectado: Enseñanza, Aprendizaje y Evaluación');\n} else if (fileName.includes('[dc-ve]')) {\n  subproceso = 'Vida Estudiantil';\n  console.log('✅ Detectado: Vida Estudiantil');\n} else if (fileName.includes('[dc-dcu]')) {\n  subproceso = 'Desarrollo Curricular';\n  console.log('✅ Detectado: Desarrollo Curricular');\n}\n\n// GESTIÓN ADMINISTRATIVA Y FINANCIERA\nelse if (fileName.includes('[gaf-ging]')) {\n  subproceso = 'Gestión de Ingresos';\n  console.log('✅ Detectado: Gestión de Ingresos');\n} else if (fileName.includes('[gaf-pfp]')) {\n  subproceso = 'Planeación Financiera y Presupuesto';\n  console.log('✅ Detectado: Planeación Financiera y Presupuesto');\n} else if (fileName.includes('[gaf-cfc]')) {\n  subproceso = 'Contabilidad Financiera y Costeo';\n  console.log('✅ Detectado: Contabilidad Financiera y Costeo');\n} else if (fileName.includes('[gaf-aprv]')) {\n  subproceso = 'Aprovisionamiento';\n  console.log('✅ Detectado: Aprovisionamiento');\n} else if (fileName.includes('[gaf-aat]')) {\n  subproceso = 'Administración de Tesorería';\n  console.log('✅ Detectado: Administración de Tesorería');\n} else if (fileName.includes('[gaf-gdtl]')) {\n  subproceso = 'Gestión Documental';\n  console.log('✅ Detectado: Gestión Documental');\n} else if (fileName.includes('[gaf-gaa]')) {\n  subproceso = 'Gestión Académico Administrativo';\n  console.log('✅ Detectado: Gestión Académico Administrativo');\n} else if (fileName.includes('[gaf]')) {\n  subproceso = 'General Administrativa y Financiera';\n  console.log('✅ Detectado: General Administrativa y Financiera');\n}\n\n// GESTIÓN DE MERCADEO Y POSICIONAMIENTO\nelse if (fileName.includes('[gmp-imd]')) {\n  subproceso = 'Investigación de Mercados';\n  console.log('✅ Detectado: Investigación de Mercados');\n} else if (fileName.includes('[gmp-cyv]')) {\n  subproceso = 'Comercialización y Ventas';\n  console.log('✅ Detectado: Comercialización y Ventas');\n} else if (fileName.includes('[gmp]')) {\n  subproceso = 'General de Mercadeo y Posicionamiento';\n  console.log('✅ Detectado: General de Mercadeo y Posicionamiento');\n} else {\n  console.warn(`❌ NO SE DETECTÓ NINGÚN PREFIJO`);\n}\n\n// DETECTAR TIPO DE DOCUMENTO\nlet tipoDocumento = 'otro';\nif (fileName.includes('caracterizacion') || fileName.includes('caracterización')) {\n  tipoDocumento = 'caracterizacion';\n} else if (fileName.includes('procedimiento')) {\n  tipoDocumento = 'procedimiento';\n} else if (fileName.includes('instructivo')) {\n  tipoDocumento = 'instructivo';\n} else if (fileName.includes('formato') || fileName.includes('form')) {\n  tipoDocumento = 'formato';\n} else if (fileName.includes('manual')) {\n  tipoDocumento = 'manual';\n} else if (fileName.includes('politica') || fileName.includes('política')) {\n  tipoDocumento = 'politica';\n}\n\nconst versionMatch = fileName.match(/v(\\d+\\.?\\d*)/i);\nconst version = versionMatch ? versionMatch[1] : '1.0';\n\nconst fechaMatch = fileName.match(/(\\d{4})[-_](\\d{2})[-_](\\d{2})/);\nlet fechaEmision = null;\nif (fechaMatch) {\n  fechaEmision = `${fechaMatch[1]}-${fechaMatch[2]}-${fechaMatch[3]}`;\n}\n\nconst esGlobal = subproceso === 'Global';\nconst esGeneral = subproceso.includes('General');\n\nconsole.log(`   └─ Subproceso: ${subproceso || '⚠️ SIN PREFIJO'}`);\nconsole.log(`   └─ Tipo: ${tipoDocumento}`);\nconsole.log(`   └─ Es general: ${esGeneral}\\n`);\n\nreturn {\n  json: {\n    ...($input.item.json),\n    name: fileNameOriginal,\n    subproceso: subproceso,\n    es_general: esGeneral,\n    es_global: esGlobal,\n    tipo_documento: tipoDocumento,\n    version_documento: version,\n    fecha_emision: fechaEmision,\n    nombre_documento_original: fileNameOriginal\n  },\n  binary: $input.item.binary\n};"
+      },
+      "id": "01c0b771-7a6b-4974-9346-22b685c2aaf1",
+      "name": "🔍 Detectar Tipo de Documento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        -576
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  json: {\n    ...($input.item.json),\n    _metadata_backup: {\n      id: $input.item.json.id,\n      name: $input.item.json.name,\n      mimeType: $input.item.json.mimeType,\n      proceso: $input.item.json.proceso,\n      codigo_proceso: $input.item.json.codigo_proceso,\n      audit_scope: $input.item.json.audit_scope,\n      subproceso: $input.item.json.subproceso,\n      es_general: $input.item.json.es_general,\n      es_global: $input.item.json.es_global,\n      tipo_documento: $input.item.json.tipo_documento,\n      nombre_documento_original: $input.item.json.nombre_documento_original,\n      version_documento: $input.item.json.version_documento,\n      fecha_emision: $input.item.json.fecha_emision\n    }\n  },\n  binary: $input.item.binary\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        -576
+      ],
+      "id": "34876afd-14ba-4b0e-8252-c14213ccfd62",
+      "name": "Guardar Metadata"
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "id": "c553b347-a913-4bdb-a759-2e9b7100cf37",
+      "name": "📄 Extraer Texto del PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1568,
+        -576
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const textoExtraido = $input.item.json.data || $input.item.json.text;\n\n// Buscar metadata del nodo \"Guardar Metadata\"\nconst guardarNode = $('Guardar Metadata').item.json;\n\nconsole.log(`📄 Proceso: ${guardarNode.proceso || 'no encontrado'}`);\n\nreturn {\n  json: {\n    data: textoExtraido,\n    proceso: guardarNode.proceso,\n    codigo_proceso: guardarNode.codigo_proceso,\n    audit_scope: guardarNode.audit_scope,\n    subproceso: guardarNode.subproceso,\n    es_general: guardarNode.es_general,\n    es_global: guardarNode.es_global,\n    tipo_documento: guardarNode.tipo_documento,\n    nombre_documento_original: guardarNode.nombre_documento_original,\n    version_documento: guardarNode.version_documento,\n    fecha_emision: guardarNode.fecha_emision,\n    id: guardarNode.id,\n    name: guardarNode.name,\n    mimeType: guardarNode.mimeType\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        -576
+      ],
+      "id": "54998296-8234-4762-9688-1bc9eeddbff8",
+      "name": "Recuperar Metadata"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================\n// EXTRAER Y LIMPIAR TEXTO\n// ============================================\n\nlet textContent = '';\n\nif ($input.item.json.data && typeof $input.item.json.data === 'string') {\n  textContent = $input.item.json.data;\n} else if ($input.item.json.text) {\n  textContent = $input.item.json.text;\n} else {\n  throw new Error('No se pudo encontrar el texto extraído');\n}\n\nif (!textContent || textContent.length < 100) {\n  throw new Error(`Documento muy corto: ${textContent.length} caracteres`);\n}\n\nconst cleanText = textContent\n  .replace(/\\r\\n/g, '\\n')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .replace(/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]/g, '')\n  .trim();\n\nconsole.log(`✅ Texto: ${cleanText.length} caracteres`);\nconsole.log(`📄 Doc: ${$input.item.json.nombre_documento_original || 'sin nombre'}`);\n\n// Obtener metadata del input (viene del nodo \"Guardar Metadata\")\nreturn {\n  json: {\n    contenido_completo: cleanText,\n    longitud_contenido: cleanText.length,\n    \n    // Estos campos vienen del nodo \"Guardar Metadata\"\n    id: $input.item.json.id,\n    name: $input.item.json.name,\n    mimeType: $input.item.json.mimeType,\n    proceso: $input.item.json.proceso,\n    codigo_proceso: $input.item.json.codigo_proceso,\n    audit_scope: $input.item.json.audit_scope,\n    subproceso: $input.item.json.subproceso,\n    es_general: $input.item.json.es_general,\n    tipo_documento: $input.item.json.tipo_documento,\n    nombre_documento_original: $input.item.json.nombre_documento_original,\n    version_documento: $input.item.json.version_documento,\n    fecha_emision: $input.item.json.fecha_emision\n  }\n};"
+      },
+      "id": "ea2e9ec2-2ff2-4b8a-8582-a8df1209e80f",
+      "name": "🧹 Limpiar Texto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        -576
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// DIVIDIR EN CHUNKS - PROCESA TODOS LOS ITEMS\n// ============================================\n\nconst allItems = $input.all();\nconst allChunks = [];\n\nfor (const item of allItems) {\n  const texto = item.json.contenido_completo;\n  \n  if (!texto || texto.length < 100) {\n    console.warn(`Saltando item sin contenido suficiente`);\n    continue;\n  }\n  \n  const proceso = item.json.proceso || 'Sin Proceso';\n  const subproceso = item.json.subproceso || '';\n  const esGeneral = item.json.es_general || false;\n  const codigoProceso = item.json.codigo_proceso || '';\n  const tipoDocumento = item.json.tipo_documento || 'otro';\n  const nombreDocumento = item.json.nombre_documento_original || item.json.name || 'sin_nombre.pdf';\n  const versionDocumento = item.json.version_documento || '1.0';\n  const fechaEmision = item.json.fecha_emision || null;\n  const organization = 'UNIMINUTO';\n  const sede = 'Bogotá';\n  const auditScope = item.json.audit_scope || '2025';\n  const documentoIdDrive = item.json.id || '';\n  \n  const chunkSize = 800;\n  const overlap = 150;\n  \n  function simpleHash(str) {\n    let hash = 0;\n    for (let i = 0; i < str.length; i++) {\n      const char = str.charCodeAt(i);\n      hash = ((hash << 5) - hash) + char;\n      hash = hash & hash;\n    }\n    return Math.abs(hash).toString(16);\n  }\n  \n  const paragraphs = texto.split(/\\n\\n+/);\n  const chunks = [];\n  \n  let currentChunk = '';\n  let chunkIndex = 0;\n  \n  for (const paragraph of paragraphs) {\n    const trimmedParagraph = paragraph.trim();\n    if (!trimmedParagraph) continue;\n    \n    if (currentChunk.length + trimmedParagraph.length > chunkSize && currentChunk.length > 0) {\n      chunks.push({\n        contenido: currentChunk.trim(),\n        chunk_index: chunkIndex\n      });\n      \n      currentChunk = currentChunk.slice(-overlap) + '\\n\\n' + trimmedParagraph;\n      chunkIndex++;\n    } else {\n      currentChunk += (currentChunk ? '\\n\\n' : '') + trimmedParagraph;\n    }\n  }\n  \n  if (currentChunk.trim()) {\n    chunks.push({\n      contenido: currentChunk.trim(),\n      chunk_index: chunkIndex\n    });\n  }\n  \n  const totalChunks = chunks.length;\n  \n  console.log(`📄 ${nombreDocumento}: ${totalChunks} chunks`);\n  if (subproceso) {\n    console.log(`   └─ Subproceso: ${subproceso}`);\n  }\n  \n  // Agregar chunks de este documento al array total\n  for (let idx = 0; idx < chunks.length; idx++) {\n    allChunks.push({\n      json: {\n        contenido: chunks[idx].contenido,\n        chunk_index: idx,\n        total_chunks: totalChunks,\n        proceso: proceso,\n        subproceso: subproceso,\n        es_general: esGeneral,\n        codigo_proceso: codigoProceso,\n        tipo_documento: tipoDocumento,\n        nombre_documento: nombreDocumento,\n        version_documento: versionDocumento,\n        fecha_emision: fechaEmision,\n        organization: organization,\n        sede: sede,\n        audit_scope: auditScope,\n        vigente: true,\n        estado: 'vigente',\n        hash_contenido: simpleHash(chunks[idx].contenido),\n        creado_por: 'sistema_ingesta',\n        documento_id_drive: documentoIdDrive\n      }\n    });\n  }\n}\n\nconsole.log(`\\n✅ Total de chunks generados: ${allChunks.length}`);\n\nreturn allChunks;"
+      },
+      "id": "fa80f6a5-e7e8-400f-9581-c89d09e1b056",
+      "name": "✂️ Dividir en Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        -576
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  json: {\n    pageContent: $input.item.json.contenido,\n    metadata: {\n      proceso: $input.item.json.proceso,\n      subproceso: $input.item.json.subproceso,\n      es_general: $input.item.json.es_general,\n      es_global: $input.item.json.es_global,\n      codigo_proceso: $input.item.json.codigo_proceso,\n      tipo_documento: $input.item.json.tipo_documento,\n      nombre_documento: $input.item.json.nombre_documento,\n      version_documento: $input.item.json.version_documento,\n      fecha_emision: $input.item.json.fecha_emision,\n      organization: $input.item.json.organization,\n      sede: $input.item.json.sede,\n      audit_scope: $input.item.json.audit_scope,\n      vigente: $input.item.json.vigente,\n      estado: $input.item.json.estado,\n      chunk_index: $input.item.json.chunk_index,\n      total_chunks: $input.item.json.total_chunks,\n      hash_contenido: $input.item.json.hash_contenido,\n      creado_por: $input.item.json.creado_por\n    }\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        -576
+      ],
+      "id": "5df1b69f-be65-4c91-8253-e2f537518d8c",
+      "name": "Formatear para Vector Store"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================\n// GENERAR EMBEDDING + INSERTAR EN SUPABASE - JINA v3 (1024 dims)\n// ============================================\n\nconst SUPABASE_URL = $env.SUPABASE_URL;\nconst SUPABASE_KEY = $env.SUPABASE_KEY;\nconst JINA_API_KEY = $env.JINA_API_KEY; // ✅ Variable de entorno\n\nconst item = $input.item.json;\n\n// 1. Generar embedding con Jina\nconst embeddingResponse = await this.helpers.httpRequest({\n  method: 'POST',\n  url: 'https://api.jina.ai/v1/embeddings',\n  headers: {\n    'Content-Type': 'application/json',\n    'Authorization': `Bearer ${JINA_API_KEY}`\n  },\n  body: {\n    input: [item.pageContent.substring(0, 8000)],\n    model: 'jina-embeddings-v3',\n    task: 'retrieval.passage',\n    dimensions: 1024\n  },\n  json: true\n});\n\nconst embedding = embeddingResponse.data[0].embedding;\nconst embeddingVector = '[' + embedding.join(',') + ']';\n\n// 2. Insertar en Supabase\nawait this.helpers.httpRequest({\n  method: 'POST',\n  url: `${SUPABASE_URL}/rest/v1/procesos_uniminuto_duplicate`,\n  headers: {\n    'Content-Type': 'application/json',\n    'apikey': SUPABASE_KEY,\n    'Authorization': `Bearer ${SUPABASE_KEY}`,\n    'Prefer': 'return=minimal'\n  },\n  body: {\n    content: item.pageContent,\n    contenido: item.pageContent,\n    embedding: embeddingVector,\n    metadata: item.metadata,\n    proceso: item.metadata.proceso,\n    subproceso: item.metadata.subproceso,\n    es_general: item.metadata.es_general,\n    es_global: item.metadata.es_global,\n    codigo_proceso: item.metadata.codigo_proceso,\n    tipo_documento: item.metadata.tipo_documento,\n    nombre_documento: item.metadata.nombre_documento,\n    version_documento: item.metadata.version_documento,\n    organization: item.metadata.organization,\n    sede: item.metadata.sede,\n    audit_scope: item.metadata.audit_scope,\n    vigente: item.metadata.vigente,\n    estado: item.metadata.estado,\n    chunk_index: item.metadata.chunk_index,\n    total_chunks: item.metadata.total_chunks,\n    hash_contenido: item.metadata.hash_contenido,\n    creado_por: item.metadata.creado_por\n  },\n  json: true\n});\n\nreturn { \n  json: { \n    success: true,\n    proceso: item.metadata.proceso,\n    codigo_proceso: item.metadata.codigo_proceso,\n    audit_scope: item.metadata.audit_scope,\n    subproceso: item.metadata.subproceso,\n    tipo_documento: item.metadata.tipo_documento,\n    nombre_documento: item.metadata.nombre_documento,\n    es_general: item.metadata.es_general\n  } \n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2672,
+        -576
+      ],
+      "id": "f2288aa0-f617-4640-a30a-748455513075",
+      "name": "Insertar en Supabase con Embedding"
+    },
+    {
+      "parameters": {
+        "jsCode": "const allItems = $input.all();\n\nif (allItems.length === 0) {\n  throw new Error('No hay items para resumir');\n}\n\nconst primerItem = allItems[0].json;\n\n// Leer proceso del primer item\nconst proceso = primerItem.proceso || 'Desconocido';\nconst codigoProceso = primerItem.codigo_proceso || 'N/A';\nconst auditScope = primerItem.audit_scope || '2025';\n\nconst insertados = allItems.filter(item => item.json && item.json.success).length;\n\nconst porTipoDoc = {};\nconst porSubproceso = {};\nconst documentosUnicos = new Set();\n\nallItems.forEach(item => {\n  const tipo = item.json.tipo_documento || 'otro';\n  const sub = item.json.subproceso || 'sin_subproceso';\n  const doc = item.json.nombre_documento || '';\n  \n  porTipoDoc[tipo] = (porTipoDoc[tipo] || 0) + 1;\n  porSubproceso[sub] = (porSubproceso[sub] || 0) + 1;\n  \n  if (doc) documentosUnicos.add(doc);\n});\n\nconst tieneGenerales = allItems.some(item => item.json.es_general === true);\n\nconsole.log(`\\n📊 RESUMEN INGESTA PROCESO`);\nconsole.log(`====================================`);\nconsole.log(`📋 Proceso: ${proceso}`);\nconsole.log(`🔖 Código: ${codigoProceso}`);\nconsole.log(`📅 Audit Scope: ${auditScope}`);\nconsole.log(`✅ Chunks insertados: ${insertados}/${allItems.length}`);\nconsole.log(`📄 Documentos procesados: ${documentosUnicos.size}`);\n\nconsole.log(`\\n📊 Distribución por tipo:`);\nObject.entries(porTipoDoc).forEach(([tipo, count]) => {\n  console.log(`   ${tipo}: ${count} chunks`);\n});\n\nconsole.log(`\\n📊 Distribución por subproceso:`);\nObject.entries(porSubproceso).forEach(([sub, count]) => {\n  console.log(`   ${sub}: ${count} chunks`);\n});\n\nif (tieneGenerales) {\n  console.log(`\\n⭐ Se incluyeron documentos generales del proceso`);\n}\n\nreturn [{\n  json: {\n    proceso: proceso,\n    codigo_proceso: codigoProceso,\n    audit_scope: auditScope,\n    total_chunks: allItems.length,\n    chunks_insertados: insertados,\n    documentos_procesados: documentosUnicos.size,\n    lista_documentos: Array.from(documentosUnicos),\n    distribucion_tipos: porTipoDoc,\n    distribucion_subprocesos: porSubproceso,\n    tiene_documentos_generales: tieneGenerales,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "14a96bbc-85da-4108-96e9-f00d7c726267",
+      "name": "📊 Generar Resumen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2912,
+        -576
+      ]
+    },
+    {
+      "id": "17764868-b392-416d-84dc-983146fceed0",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -80,
+        -720
+      ],
+      "typeVersion": 1,
+      "parameters": {
+        "content": "## 🚀 INGESTA TODOS LOS PROCESOS\nUn solo trigger procesa las **5 carpetas** en secuencia automática.\n\nPara agregar un nuevo proceso, edita el array en **⚙️ Config - Todos los Procesos**.",
+        "height": 120,
+        "width": 500
+      }
+    },
+    {
+      "parameters": {
+        "content": "## SQL Supabase\n-- Ver todos los procesos y subprocesos disponibles\nSELECT \n    proceso,\n    subproceso,\n    tipo_documento,\n    COUNT(*) as chunks,\n    COUNT(DISTINCT nombre_documento) as documentos\nFROM procesos_uniminuto\nWHERE proceso IS NOT NULL\nGROUP BY proceso, subproceso, tipo_documento\nORDER BY proceso, subproceso;\n\n-- Ver total general\nSELECT \n    COUNT(*) as total_chunks,\n    COUNT(DISTINCT proceso) as total_procesos,\n    COUNT(DISTINCT nombre_documento) as total_documentos\nFROM procesos_uniminuto;",
+        "height": 416,
+        "width": 448
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        48,
+        -256
+      ],
+      "typeVersion": 1,
+      "id": "932b2954-8f8a-4c53-b50e-887f29bc5f8d",
+      "name": "Sticky Note1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger Manual": {
+      "main": [
+        [
+          {
+            "node": "⚙️ Config - Todos los Procesos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⚙️ Config - Todos los Procesos": {
+      "main": [
+        [
+          {
+            "node": "📋 Listar PDFs en Backblaze",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📋 Listar PDFs en Backblaze": {
+      "main": [
+        [
+          {
+            "node": "📥 Descargar cada PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📥 Descargar cada PDF": {
+      "main": [
+        [
+          {
+            "node": "🔍 Detectar Tipo de Documento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔍 Detectar Tipo de Documento": {
+      "main": [
+        [
+          {
+            "node": "Guardar Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar Metadata": {
+      "main": [
+        [
+          {
+            "node": "📄 Extraer Texto del PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📄 Extraer Texto del PDF": {
+      "main": [
+        [
+          {
+            "node": "Recuperar Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recuperar Metadata": {
+      "main": [
+        [
+          {
+            "node": "🧹 Limpiar Texto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧹 Limpiar Texto": {
+      "main": [
+        [
+          {
+            "node": "✂️ Dividir en Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✂️ Dividir en Chunks": {
+      "main": [
+        [
+          {
+            "node": "Formatear para Vector Store",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatear para Vector Store": {
+      "main": [
+        [
+          {
+            "node": "Insertar en Supabase con Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insertar en Supabase con Embedding": {
+      "main": [
+        [
+          {
+            "node": "📊 Generar Resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "0e105098-2777-44a0-abf4-2ea30d9a5381",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "26af3cc711839c8f71838eb95e7755eb1c2859fa48dbcd6aa4bc5ba416e8cf7c"
+  },
+  "id": "56b5d9b6-04a8-4871-aebf-a6f29b4b0c8f",
+  "tags": [
+    {
+      "updatedAt": "2026-02-18T01:00:50.343Z",
+      "createdAt": "2026-02-18T01:00:50.343Z",
+      "id": "6Ps305q7j1AFbpRY",
+      "name": "Procesos"
+    },
+    {
+      "updatedAt": "2026-02-18T00:57:11.787Z",
+      "createdAt": "2026-02-18T00:57:11.787Z",
+      "id": "NPCTdcKrahls916u",
+      "name": "Ingesta"
+    },
+    {
+      "updatedAt": "2026-02-18T00:57:11.648Z",
+      "createdAt": "2026-02-18T00:57:11.648Z",
+      "id": "lDUgXVlbpmrBpLKA",
+      "name": "AVA"
+    }
+  ]
+}

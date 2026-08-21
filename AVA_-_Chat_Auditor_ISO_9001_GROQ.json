@@ -1,0 +1,857 @@
+{
+  "name": "AVA - Chat Auditor ISO 9001",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "4c16333e-fdf5-4c86-b6b2-35bf5f0493f0",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -2352,
+        80
+      ],
+      "id": "c568b970-6068-4a7d-90c9-af27e7a9c5e6",
+      "name": "Webhook",
+      "webhookId": "4c16333e-fdf5-4c86-b6b2-35bf5f0493f0"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Intentar leer output del AI Agent directamente\nconst outputAI = $('AI Agent Orquestador').first().json.output || null;\nconst sessionId = $('Code - Determinar Estado').first().json.sessionId || null;\nconst proceso = $('Code - Determinar Estado').first().json.proceso_activo || null;\n\nif (outputAI) {\n  return {\n    json: {\n      tipo: \"respuesta_rag\",\n      respuesta: outputAI,\n      sessionId: sessionId,\n      proceso: proceso\n    }\n  };\n}\n\nreturn {\n  json: {\n    tipo: \"error\",\n    respuesta: \"No se pudo obtener respuesta del agente.\",\n    sessionId: sessionId\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        -16
+      ],
+      "id": "47b969cb-09c9-4b7f-a8e0-f14f0b1e2bff",
+      "name": "Formatear Respuesta"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM chat_sessions WHERE session_id = $1;",
+        "options": {
+          "queryReplacement": "={{$json.body.sessionId}}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1904,
+        80
+      ],
+      "id": "e17a08a4-791e-4191-bf15-0c546663ebd5",
+      "name": "Postgres - Leer Sesión",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "lEbqqual6SIFS69b",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO chat_sessions (\n  session_id, category, proceso, macroproceso,\n  clausula_actual, fases_completadas, conteo_intercambios_clausula\n)\nVALUES ($1, $2, $3, $4, $5, $6, $7)\nON CONFLICT (session_id)\nDO UPDATE SET\n  proceso = EXCLUDED.proceso,\n  macroproceso = EXCLUDED.macroproceso,\n  clausula_actual = EXCLUDED.clausula_actual,\n  fases_completadas = EXCLUDED.fases_completadas,\n  conteo_intercambios_clausula = EXCLUDED.conteo_intercambios_clausula,\n  ultimo_mensaje = NOW();",
+        "options": {
+          "queryReplacement": "={{ [\n  $('Code - Determinar Estado').item.json.sessionId,\n  $('Code - Determinar Estado').item.json.category,\n  $('Code - Determinar Estado').item.json.proceso_activo,\n  $('Code - Determinar Estado').item.json.macroproceso_activo,\n  $('Code - Determinar Estado').item.json.clausula_actual,\n  JSON.stringify($('Code - Determinar Estado').item.json.fases_completadas),\n  $('Code - Determinar Estado').item.json.conteo_intercambios_clausula\n] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1232,
+        -16
+      ],
+      "id": "d4dce2e3-ed92-46d2-b4d4-0bc5794b95a8",
+      "name": "Postgres - Guardar/Actualizar Sesión",
+      "credentials": {
+        "postgres": {
+          "id": "lEbqqual6SIFS69b",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b3f23d19-d53c-423f-b8b6-bb16fb06afcc",
+              "leftValue": "={{ $json.proceso_activo }}",
+              "rightValue": "Investigación",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1456,
+        80
+      ],
+      "id": "6758bc93-6db4-429b-ac57-670f63859870",
+      "name": "IF - ¿Proceso válido?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const lecturaDB = $(\"Postgres - Leer Sesión\").first().json || {};\nconst rawJson = $(\"Code in JavaScript\").first().json;\nconst body = rawJson.body || rawJson;\n\nconst message = (body.message || \"\").trim();\nconst sessionId = rawJson.sessionId || body.sessionId;\nconst category = body.category || \"simulador\";\n\nconst procesosValidos = [\n  // Investigación\n  \"Investigación Formativa\",\n  //\"I+D+I+C\",\n  //\"Gestión Editorial\",\n  \"Transferencia de Conocimiento y Tecnología\",\n  // Proyección Social\n  \"Educación Continua\",\n  //\"Gestión de Empleabilidad\",\n  //\"Práctica Profesional\",\n  //\"Práctica en Responsabilidad Social\",\n  //\"Voluntariado\",\n  //\"Relacionamiento con Egresados y Egresados no Graduados\",\n  //\"Articulación\",\n  //\"Gestión y Desarrollo del Emprendimiento\",\n  // Docencia\n  \"Enseñanza, Aprendizaje y Evaluación\",\n  \"Vida Estudiantil\",\n  //\"Desarrollo Curricular\",\n  // GAF\n  \"Gestión de Ingresos\",\n  //\"Planeación Financiera y Presupuesto\",\n  //\"Contabilidad Financiera y Costeo\",\n  \"Aprovisionamiento\",\n  //\"Administración de Tesorería\",\n  //\"Gestión Documental\",\n  //\"Gestión Académico Administrativo\",\n  // GMP\n  //\"Investigación de Mercados\",\n  \"Comercialización y Ventas\"\n];\n\nconst messageEsProceso = procesosValidos.includes(message);\nconst procesoDesdeBody = procesosValidos.includes(body.proceso) ? body.proceso : null;\n\nlet procesoFinal = lecturaDB.proceso\n  || procesoDesdeBody\n  || (messageEsProceso ? message : null);\n\nlet macroFinal = lecturaDB.macroproceso\n  || body.macroproceso\n  || null;\n\nconst esSeleccionDeProceso = messageEsProceso && !lecturaDB.proceso;\n\nconst sanitizedMessage = esSeleccionDeProceso\n  ? `El usuario ha iniciado la auditoría del subproceso \"${procesoFinal}\" perteneciente al macroproceso \"${macroFinal}\". Salúdalo brevemente y formula la primera pregunta técnica de auditoría externa basada en ISO 9001:2015 para ese subproceso.`\n  : message;\n\n// ── CONTADOR DE FASES ──────────────────────────────────────\nconst clausulaActual = lecturaDB.clausula_actual || null;\nconst fasesCompletadas = lecturaDB.fases_completadas || [];\nconst conteoIntercambios = esSeleccionDeProceso\n  ? 0\n  : (lecturaDB.conteo_intercambios_clausula || 0) + 1;\n// ──────────────────────────────────────────────────────────\n\nreturn [{ json: {\n  sessionId,\n  category,\n  proceso_activo: procesoFinal,\n  macroproceso_activo: macroFinal,\n  sanitizedMessage,\n  debeSeleccionarProceso: !procesoFinal,\n  esSeleccionDeProceso,\n  // Contador de fases\n  clausula_actual: clausulaActual,\n  fases_completadas: fasesCompletadas,\n  conteo_intercambios_clausula: conteoIntercambios,\n  // Debug\n  _debug_db_proceso: lecturaDB.proceso || null,\n  _debug_message: message,\n  _debug_body_proceso: body.proceso || null\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1680,
+        80
+      ],
+      "id": "f6a828b1-b49f-43db-8b74-7d9b9279edb2",
+      "name": "Code - Determinar Estado"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    respuesta: \"Por favor selecciona un subproceso válido desde el menú de auditoría.\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1232,
+        176
+      ],
+      "id": "46688a65-23f8-4dc0-86a0-0f49cbb2e84c",
+      "name": "Respuesta - Proceso Inválido"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit_trail (\n  session_id,\n  pregunta,\n  proceso_consultado,\n  subproceso_consultado,\n  categoria,\n  respuesta,\n  documentos_iso,\n  documentos_proceso,\n  timestamp\n) VALUES (\n  '{{ $('Code - Determinar Estado').item.json.sessionId }}',\n  '{{ $('Code - Determinar Estado').item.json.sanitizedMessage.replace(/'/g, \"''\") }}',\n  '{{ $('Code - Determinar Estado').item.json.macroproceso_activo }}',\n  '{{ $('Code - Determinar Estado').item.json.proceso_activo }}',\n  '{{ $('Code - Determinar Estado').item.json.category }}',\n  '{{ $('AI Agent Orquestador').item.json.output.replace(/'/g, \"''\") }}',\n  '[]',\n  '[]',\n  NOW()\n);",
+        "options": {}
+      },
+      "name": "Guardar Audit Trail",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        144,
+        -16
+      ],
+      "id": "ddd91045-1274-4795-81ee-e6506eaee699",
+      "typeVersion": 2.6,
+      "retryOnFail": false,
+      "alwaysOutputData": false,
+      "executeOnce": false,
+      "credentials": {
+        "postgres": {
+          "id": "lEbqqual6SIFS69b",
+          "name": "Postgres account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -576,
+        624
+      ],
+      "id": "3e3efebe-03d6-42ec-8a16-329ddb650263",
+      "name": "Embeddings OpenAI",
+      "credentials": {
+        "openAiApi": {
+          "id": "GROQ_CRED_ID",
+          "name": "Groq (OpenAI-compatible)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 2000,
+          "temperature": 0.3
+        },
+        "modelId": {
+          "__rl": true,
+          "value": "llama-3.3-70b-versatile",
+          "mode": "id"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -1008,
+        208
+      ],
+      "id": "5c0f3db4-b618-492d-ba06-6ab04a766837",
+      "name": "OpenAI Chat Model1",
+      "credentials": {
+        "openAiApi": {
+          "id": "GROQ_CRED_ID",
+          "name": "Groq (OpenAI-compatible)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -160,
+        624
+      ],
+      "id": "2934888f-dba7-4354-a376-4c0c32007a39",
+      "name": "Embeddings OpenAI1",
+      "credentials": {
+        "openAiApi": {
+          "id": "GROQ_CRED_ID",
+          "name": "Groq (OpenAI-compatible)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Busca información documental del proceso institucional auditado, incluyendo procedimientos, formatos y evidencias.",
+        "tableName": {
+          "__rl": true,
+          "value": "procesos_uniminuto",
+          "mode": "list",
+          "cachedResultName": "procesos_uniminuto"
+        },
+        "topK": 5,
+        "options": {
+          "queryName": "match_documents_proceso",
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "subproceso",
+                "value": "={{ $('Code - Determinar Estado').item.json.proceso_activo }}"
+              }
+            ]
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "position": [
+        -240,
+        416
+      ],
+      "id": "aa6f46a1-1509-43fe-b598-82553d97241a",
+      "name": "Vector Store Proceso",
+      "credentials": {
+        "supabaseApi": {
+          "id": "zbDF30DmmBF53r9g",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Busca información en la norma ISO 9001:2015, incluyendo cláusulas, requisitos y criterios de auditoría.",
+        "tableName": {
+          "__rl": true,
+          "value": "iso9001_norma",
+          "mode": "list",
+          "cachedResultName": "iso9001_norma"
+        },
+        "topK": 5,
+        "options": {
+          "queryName": "match_documents"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "position": [
+        -656,
+        416
+      ],
+      "id": "2ff08d06-567e-4aaa-bb52-62ab34b706d5",
+      "name": "Vector Store ISO",
+      "credentials": {
+        "supabaseApi": {
+          "id": "zbDF30DmmBF53r9g",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const sessionId =\n  $json.body?.sessionId ??\n  $json.sessionId ??\n  $json.body?.sessionid ??\n  $json.sessionid;\n\nconsole.log('sessionId recibido:', sessionId);\n\nif (!sessionId) {\n  throw new Error('sessionId no está llegando');\n}\n\nreturn [{ json: { ...$json, sessionId } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2128,
+        80
+      ],
+      "id": "aab244f4-d0f2-45ff-8de4-4d988584ca99",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Code - Determinar Estado').item.json.sessionId }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -1312,
+        576
+      ],
+      "id": "950f6742-e188-4fa3-8025-82f28c7d0683",
+      "name": "Simple Memory",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 800,
+          "temperature": 0
+        },
+        "modelId": {
+          "__rl": true,
+          "value": "llama-3.3-70b-versatile",
+          "mode": "id"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -784,
+        416
+      ],
+      "id": "bc38dc3c-8fdc-48cc-9634-c16cab9248e7",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "GROQ_CRED_ID",
+          "name": "Groq (OpenAI-compatible)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 800,
+          "temperature": 0
+        },
+        "modelId": {
+          "__rl": true,
+          "value": "llama-3.3-70b-versatile",
+          "mode": "id"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -368,
+        416
+      ],
+      "id": "5e000a7a-e9ac-4753-b9a1-fae7ded2096f",
+      "name": "OpenAI Chat Model2",
+      "credentials": {
+        "openAiApi": {
+          "id": "GROQ_CRED_ID",
+          "name": "Groq (OpenAI-compatible)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 600,
+          "temperature": 0.2
+        },
+        "modelId": {
+          "__rl": true,
+          "value": "llama-3.3-70b-versatile",
+          "mode": "id"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        64,
+        416
+      ],
+      "id": "70b9be3b-61b7-498b-ab51-50ab22fca1df",
+      "name": "OpenAI Chat Model3",
+      "credentials": {
+        "openAiApi": {
+          "id": "GROQ_CRED_ID",
+          "name": "Groq (OpenAI-compatible)"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.toolThink",
+      "typeVersion": 1.1,
+      "position": [
+        192,
+        416
+      ],
+      "id": "c2244157-e2c3-4a55-b973-ab09c67fdc00",
+      "name": "Think"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Code - Determinar Estado').item.json.sanitizedMessage }}",
+        "options": {
+          "systemMessage": "=={{\n(\n\"MACROPROCESO: \" + ($('Code - Determinar Estado').item.json.macroproceso_activo ?? \"NO DEFINIDO\") + \"\\n\" +\n\"SUBPROCESO BAJO AUDITORÍA: \" + ($('Code - Determinar Estado').item.json.proceso_activo ?? \"NO DEFINIDO\") + \"\\n\\n\"\n) +\n\"MACROPROCESO: \" + ($('Code - Determinar Estado').item.json.macroproceso_activo ?? \"NO DEFINIDO\") + \"\\n\" +\n\"SUBPROCESO BAJO AUDITORÍA: \" + ($('Code - Determinar Estado').item.json.proceso_activo ?? \"NO DEFINIDO\") + \"\\n\" +\n\"CLÁUSULA EN EVALUACIÓN: \" + ($('Code - Determinar Estado').item.json.clausula_actual ?? \"NO INICIADA\") + \"\\n\" +\n\"FASES COMPLETADAS: \" + JSON.stringify($('Code - Determinar Estado').item.json.fases_completadas ?? []) + \"\\n\" +\n\"INTERCAMBIOS EN CLÁUSULA ACTUAL: \" + ($('Code - Determinar Estado').item.json.conteo_intercambios_clausula ?? 0) + \"\\n\\n\" +\n\n\"# CASO ESPECIAL — INICIO DE SESIÓN\\n\" +\n\"Si el mensaje recibido contiene la frase 'ha iniciado la auditoría del subproceso', significa que el usuario acaba de seleccionar el proceso.\\n\" +\n\"En ese caso NO llames al agente_evaluador todavía.\\n\" +\n\"Solo llama a agente_iso y agente_proceso para obtener contexto inicial.\\n\" +\n\"Luego saluda brevemente y formula la primera pregunta de auditoría en formato AVA.\\n\\n\" +\n\n\"# ROL\\n\" +\n\"Eres AVA, Auditora Líder Externa ISO 9001:2015 para UNIMINUTO.\\n\" +\n\"Coordinas la auditoría usando tres agentes especializados como herramientas.\\n\" +\n\"Enfoque sistémico: verificas si el sistema evita que los errores ocurran.\\n\" +\n\"Mentalidad: entender antes de cuestionar, validar coherencia antes de buscar fallas.\\n\\n\" +\n\n\"# FLUJO OBLIGATORIO POR CADA INTERCAMBIO\\n\" +\n\"1. Llama a agente_iso → obtén la declaración normativa aplicable.\\n\" +\n\"2. Llama a agente_proceso → obtén el contexto documental del proceso.\\n\" +\n\"3. Llama a agente_evaluador → pásale: declaración normativa + contexto documental + tu pregunta anterior + respuesta del auditado.\\n\" +\n\"4. Lee la recomendación del agente_evaluador:\\n\" +\n\"   - Si recomienda PROFUNDIZAR → formula subpregunta aclaratoria sobre la fase pendiente indicada.\\n\" +\n\"   - Si recomienda AVANZAR → presenta la conclusión de esa pregunta y formula la siguiente pregunta de auditoría.\\n\" +\n\"   - Si recomienda EMITIR HALLAZGO → presenta la conclusión usando el formato de hallazgo.\\n\" +\n\"NUNCA formules una nueva pregunta de auditoría sin que el agente_evaluador haya recomendado AVANZAR.\\n\" +\n\"NUNCA saltes a una nueva pregunta mientras haya fases pendientes en la pregunta actual.\\n\\n\" +\n\n\"# INTERPRETACIÓN DE RESULTADOS DE AGENTES\\n\" +\n\"Cuando agente_iso devuelva que no encontró resultados → no formules pregunta sobre esa cláusula, busca otra.\\n\" +\n\"Cuando agente_proceso use contexto general por falta de documentos específicos → continúa la auditoría normalmente sin mencionarlo al auditado.\\n\" +\n\"Cuando agente_evaluador recomiende profundizar → formula subpregunta aclaratoria sobre el mismo punto.\\n\" +\n\"Cuando agente_evaluador recomiende avanzar cláusula → cierra formalmente y pasa a siguiente cláusula.\\n\" +\n\"Cuando agente_iso devuelva una cláusula sin número específico → no uses esa cláusula, pide a agente_iso que busque con términos más específicos del subproceso.\\n\" +\n\"Cuando agente_evaluador recomiende emitir hallazgo → usa el formato de hallazgo definido.\\n\\n\" +\n\n\"# GENERACIÓN DE PREGUNTAS\\n\" +\n\"Cada pregunta de auditoría debe estar fundamentada en la declaración normativa del agente_iso\\n\" +\n\"y en el contexto documental del agente_proceso.\\n\" +\n\"Una pregunta cubre un aspecto específico del proceso a evaluar.\\n\" +\n\"No avances a una nueva pregunta hasta que el agente_evaluador confirme que las 3 fases están completas.\\n\" +\n\"Si no hay documentos específicos del proceso usa el contexto general del macroproceso\\n\" +\n\"y los documentos globales disponibles — siempre hay base suficiente para auditar.\\n\\n\" +\n\n\"GLOSARIO INSTITUCIONAL:\\n\" +\n\"Tienes acceso a un glosario oficial de términos del SGC de UNIMINUTO.\\n\" +\n\"Cuando el auditado use un término técnico o institucional, consúltalo en RAG para usar la definición exacta oficial.\\n\" +\n\"Cuando formules preguntas que involucren términos del glosario, úsalos correctamente según su definición institucional.\\n\\n\" +\n\n\"PROHIBICIÓN DE REPETICIÓN:\\n\" +\n\"Antes de formular una pregunta verifica si ya hiciste una pregunta con la misma intención en esta sesión.\\n\" +\n\"Si ya exploraste ese aspecto aunque sea con palabras diferentes, NO lo vuelvas a preguntar.\\n\" +\n\"Avanza siempre hacia un aspecto nuevo del proceso que aún no hayas evaluado.\\n\\n\" +\n\n\"# REGLA FUNDAMENTAL\\n\" +\n\"El usuario es el AUDITADO. Cada mensaje es su respuesta a tu última pregunta.\\n\" +\n\"NUNCA rechaces una respuesta del auditado como fuera de alcance.\\n\" +\n\"Solo redirige si pide explícitamente hablar de temas ajenos a UNIMINUTO o ISO 9001:2015.\\n\\n\" +\n\n\"# PROHIBICIÓN DE EJEMPLOS CON CONOCIMIENTO EXTERNO\\n\" +\n\"Cuando el auditado pide un ejemplo está pidiendo que le expliques mejor la pregunta.\\n\" +\n\"NUNCA des un ejemplo inventando cómo funciona el proceso.\\n\" +\n\"En su lugar reformula la pregunta de forma más simple y concreta.\\n\" +\n\"Ejemplo correcto: 'Con propósito me refiero a: ¿para qué existe este proceso dentro de UNIMINUTO? ¿qué problema resuelve o qué valor genera?'\\n\" +\n\"Ejemplo incorrecto: inventar que el proceso busca desarrollar competencias profesionales.\\n\\n\" +\n\n\"# SECUENCIA DE AUDITORÍA\\n\" +\n\"Paso 1 — Entiendo propósito y alcance del proceso.\\n\" +\n\"Paso 2 — Verifico control: responsables, métodos, indicadores, seguimiento.\\n\" +\n\"Paso 3 — Contrasto lo declarado con RAG.\\n\" +\n\"Paso 4 — Si algo no cuadra en pasos 1-2, profundizo. Si es coherente, avanzo.\\n\" +\n\"Siempre macro primero: propósito → control → evidencia → riesgos → alineación ISO.\\n\\n\" +\n\n\"# HALLAZGOS\\n\" +\n\"Prohibido emitir hallazgo con menos de 3 intercambios sobre la misma cláusula.\\n\" +\n\"Debes haber completado pasos 1, 2 y 3 antes de clasificar.\\n\" +\n\"Asume inicialmente que el proceso cumple. Tu objetivo es validar, no refutar.\\n\\n\" +\n\"Clasificaciones:\\n\" +\n\"- Conformidad: requisito cumplido con evidencia objetiva.\\n\" +\n\"- No Conformidad: incumplimiento total o brecha estructural demostrada.\\n\" +\n\"- Observación: riesgo estructural sin incumplimiento formal.\\n\" +\n\"- Oportunidad de Mejora: mejora sugerida sin incumplimiento.\\n\\n\" +\n\n\"# CIERRE DE CLÁUSULA\\n\" +\n\"Cierra cuando: proceso explicado, responsables definidos, controles descritos, registros mencionados, sin contradicciones RAG.\\n\" +\n\"Al cerrar: reconoce coherencia, emite conclusión breve, declara cierre, avanza a siguiente cláusula.\\n\\n\" +\n\n\"# MANEJO DE RESPUESTAS DIFÍCILES\\n\" +\n\"CUANDO EL AUDITADO DICE 'NO SÉ', 'NO ENTIENDO', 'NO ESTOY SEGURO':\\n\" +\n\"No lo trates como respuesta incoherente ni lo redirijas.\\n\" +\n\"Responde con empatía, da contexto y reformula:\\n\" +\n\"1. Reconoce que es válido no tener todo claro.\\n\" +\n\"2. Explica brevemente el concepto que estás evaluando en términos simples.\\n\" +\n\"3. Reformula la pregunta de forma más concreta y accesible.\\n\" +\n\"Ejemplo: 'Entiendo, permíteme explicarlo de otra manera. Con indicadores me refiero a cualquier número o dato que uses para saber si el proceso está funcionando bien — por ejemplo, cuántos estudiantes aprobaron o cuántas quejas recibieron. ¿Tienen algo así en su proceso?'\\n\\n\" +\n\"CUANDO EL AUDITADO NO ENTIENDE LA PREGUNTA:\\n\" +\n\"Si pide aclaración o dice que no entiende, NUNCA repitas la misma pregunta.\\n\" +\n\"Descompón la pregunta en algo más simple y concreto.\\n\" +\n\"Usa ejemplos del contexto de UNIMINUTO para ilustrar.\\n\\n\" +\n\"RESPUESTA ABSURDA O INCOHERENTE REAL:\\n\" +\n\"Solo aplica cuando la respuesta NO TIENE NINGUNA RELACIÓN POSIBLE con el proceso auditado.\\n\" +\n\"En ese caso: 'La respuesta no parece relacionada con la pregunta. ¿Puede describirme cómo gestiona ese aspecto dentro del proceso auditado?'\\n\\n\" +\n\"CRITERIO CLARO:\\n\" +\n\"- 'No sé', 'No entiendo', '¿Puede explicar?' → Ayuda y reformula\\n\" +\n\"- Respuesta vaga o corta → Profundiza con subpregunta\\n\" +\n\"- Respuesta completamente ajena → Redirige\\n\\n\" +\n\n\"# FORMATO HALLAZGO\\n\" +\n\"HALLAZGO - [TIPO]\\n\" +\n\"Cláusula ISO: | Proceso: | Requisito ISO: | Evidencia evaluada: | Análisis: | Clasificación: | Justificación: | Fuentes:\\n\\n\" +\n\n\"# REGLA DE UNA SOLA PREGUNTA\\n\" +\n\"Por cada turno SOLO puedes formular UNA pregunta al auditado.\\n\" +\n\"NUNCA formules dos preguntas en el mismo mensaje.\\n\" +\n\"Si necesitas explorar dos aspectos, elige el más importante y deja el otro para el siguiente turno.\\n\\n\" +\n\n\"# FORMATO PREGUNTA\\n\" +\n\"Cláusula evaluada: | Pregunta: | Objetivo:\\n\\n\" +\n\n\"# FORMATO DE RESPUESTA FINAL\\n\" +\n\"Tu respuesta al auditado NUNCA debe incluir:\\n\" +\n\"- El output interno de agente_iso, agente_proceso o agente_evaluador.\\n\" +\n\"- Etiquetas como CLÁUSULA:, DOCUMENTOS ENCONTRADOS:, FASE ACTUAL:, RECOMENDACIÓN:, etc.\\n\" +\n\"- Contenido técnico interno de los agentes.\\n\" +\n\"Tu respuesta al auditado debe ser ÚNICAMENTE:\\n\" +\n\"- Una pregunta de auditoría en formato AVA, O\\n\" +\n\"- Una subpregunta aclaratoria, O\\n\" +\n\"- Un hallazgo en formato AVA, O\\n\" +\n\"- El cierre formal de una cláusula.\\n\" +\n\"Todo lo demás es procesamiento interno — no debe llegar al auditado.\\n\\n\"\n\n\"# IDIOMA\\n\" +\n\"Español técnico profesional exclusivamente.\"\n}}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -544,
+        -16
+      ],
+      "id": "3ded0602-1697-4f07-9393-644b6a3e2050",
+      "name": "AI Agent Orquestador"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Busca y analiza cláusulas ISO 9001:2015 relevantes para el contexto de auditoría actual. Devuelve la cláusula aplicable, el requisito exacto y el criterio de evaluación correspondiente.",
+        "text": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Prompt__User_Message_', ``, 'string') }}",
+        "options": {
+          "systemMessage": "={{\n\"MACROPROCESO: \" + ($('Code - Determinar Estado').item.json.macroproceso_activo ?? \"NO DEFINIDO\") + \"\\n\" +\n\"SUBPROCESO BAJO AUDITORÍA: \" + ($('Code - Determinar Estado').item.json.proceso_activo ?? \"NO DEFINIDO\") + \"\\n\\n\" +\n\n\"Eres el especialista normativo de la auditoría.\\n\" +\n\"Tu función es interpretar qué dice la Norma ISO 9001:2015 sobre el tema que está siendo auditado.\\n\\n\" +\n\n\"ENTIENDE TU ROL:\\n\" +\n\"No buscas coincidencias textuales. Interpretas qué EXIGE o RECOMIENDA la norma.\\n\" +\n\"Tu output es siempre una declaración normativa del tipo:\\n\" +\n\"'La norma indica que...', 'Según ISO 9001:2015 la organización debe...', 'El requisito establece que...'\\n\" +\n\"Esa declaración es la referencia que el Agente Evaluador usará para comparar con la realidad del proceso.\\n\\n\" +\n\n\"FLUJO OBLIGATORIO:\\n\" +\n\"1. Consulta el Vector Store ISO con el contexto de la pregunta o respuesta en evaluación.\\n\" +\n\"2. Identifica qué cláusula o cláusulas aplican a ese contexto.\\n\" +\n\"3. Interpreta qué exige la norma en términos concretos para ese proceso.\\n\" +\n\"4. Redacta la declaración normativa de forma clara y aplicada al contexto auditado.\\n\\n\" +\n\n\"DEVUELVE SIEMPRE EN ESTE FORMATO:\\n\" +\n\"CLÁUSULA APLICABLE: [número y título]\\n\" +\n\"DECLARACIÓN NORMATIVA: [qué dice la norma sobre este aspecto, redactado como 'La norma indica que... / Según ISO 9001:2015...']\\n\" +\n\"CRITERIO DE CUMPLIMIENTO: [qué debe poder demostrar el proceso para considerarse conforme]\\n\" +\n\"FUENTE RAG: [confirma recuperación por Vector Store ISO]\\n\\n\" +\n\n\"PROHIBICIONES ABSOLUTAS:\\n\" +\n\"- Citar cláusulas sin haberlas recuperado por RAG.\\n\" +\n\"- Referenciar otras normas, estándares, IES o sectores.\\n\" +\n\"- Inventar requisitos no encontrados en RAG.\\n\" +\n\"- Si RAG no devuelve resultados responde únicamente: Vector Store ISO no devolvió cláusulas relevantes para este contexto.\\n\\n\" +\n\n\"Responde en español técnico profesional.\"\n}}",
+          "maxIterations": 3
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agentTool",
+      "typeVersion": 3,
+      "position": [
+        -752,
+        208
+      ],
+      "id": "854bfb1b-2549-48e4-b1f5-89915ea53602",
+      "name": "agente_iso",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "toolDescription": "Busca y analiza documentación institucional de UNIMINUTO del subproceso auditado. Devuelve los documentos encontrados, las evidencias esperadas según la documentación y cualquier brecha identificada entre lo documentado y lo declarado por el auditado.",
+        "text": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Prompt__User_Message_', ``, 'string') }}",
+        "options": {
+          "systemMessage": "={{\n\"MACROPROCESO: \" + ($('Code - Determinar Estado').item.json.macroproceso_activo ?? \"NO DEFINIDO\") + \"\\n\" +\n\"SUBPROCESO BAJO AUDITORÍA: \" + ($('Code - Determinar Estado').item.json.proceso_activo ?? \"NO DEFINIDO\") + \"\\n\\n\" +\n\n\"Eres el especialista en documentación institucional de UNIMINUTO.\\n\" +\n\"Tu función es recuperar y comprender los documentos del proceso auditado para construir contexto de auditoría.\\n\\n\" +\n\n\"ENTIENDE TU ROL:\\n\" +\n\"RAG es tu fuente de contexto, no un buscador de respuestas textuales.\\n\" +\n\"Los documentos que recuperas te dicen cómo DEBERÍA funcionar el proceso según UNIMINUTO.\\n\" +\n\"Con esa información el Evaluador puede determinar si lo que declara el auditado es coherente.\\n\" +\n\"Si no hay documentos específicos del subproceso usa los generales del macroproceso.\\n\" +\n\"Nunca declares imposibilidad de continuar por falta de documentos específicos.\\n\\n\" +\n\n\"FLUJO OBLIGATORIO:\\n\" +\n\"1. Consulta el Vector Store Proceso con el contexto recibido.\\n\" +\n\"2. Lee y comprende los documentos recuperados.\\n\" +\n\"3. Extrae: propósito del proceso, responsables, controles, indicadores y registros esperados.\\n\" +\n\"4. Si hay documentos generales del macroproceso úsalos como contexto normativo institucional.\\n\" +\n\"5. Construye una imagen clara de cómo debería operar el proceso según UNIMINUTO.\\n\\n\" +\n\"- Si RAG no devuelve resultados específicos usa los documentos generales del macroproceso disponibles y continúa normalmente.\\n\" +\n\"- NUNCA menciones al usuario ni al Orquestador que no se encontraron documentos específicos.\\n\" +\n\"- El mensaje sobre ausencia de documentos es información técnica interna, no debe llegar al auditado.\\n\\n\" +\n\n\"DEVUELVE SIEMPRE EN ESTE FORMATO:\\n\" +\n\"DOCUMENTOS RECUPERADOS: [nombre y tipo de cada documento encontrado]\\n\" +\n\"CONTEXTO DEL PROCESO: [cómo debería funcionar según la documentación institucional]\\n\" +\n\"RESPONSABLES IDENTIFICADOS: [quién hace qué según los documentos]\\n\" +\n\"CONTROLES Y REGISTROS ESPERADOS: [qué evidencias deberían existir]\\n\" +\n\"EVIDENCIA DECLARADA SIN RAG: [si el auditado menciona algo que RAG no tiene, descríbelo aquí]\\n\" +\n\"FUENTE RAG: [confirma recuperación por Vector Store Proceso]\\n\\n\" +\n\n\"PROHIBICIONES ABSOLUTAS:\\n\" +\n\"- Inventar documentos no recuperados por RAG.\\n\" +\n\"- Buscar coincidencia textual entre respuesta del auditado y documentos.\\n\" +\n\"- Declarar imposibilidad de auditar solo porque no hay documentos específicos.\\n\" +\n\"- Usar conocimiento externo sobre UNIMINUTO.\\n\\n\" +\n\n\"Responde en español técnico profesional.\"\n\n\"LÍMITE DE OUTPUT:\\n\" +\n\"Tu respuesta no debe superar 500 palabras.\\n\" +\n\"Si RAG devuelve múltiples chunks del mismo documento, consolídalos en un solo resumen.\\n\" +\n\"Nunca repitas el mismo contenido más de una vez.\\n\"\n}}",
+          "maxIterations": 15
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agentTool",
+      "typeVersion": 3,
+      "position": [
+        -336,
+        208
+      ],
+      "id": "262920e7-8e97-473f-ad2b-b1c6627902eb",
+      "name": "agente_proceso"
+    },
+    {
+      "parameters": {
+        "toolDescription": "Evalúa la coherencia entre la respuesta del auditado, el requisito ISO y la documentación del proceso. Determina la fase de auditoría actual, si se necesita profundizar más o si aplica emitir un hallazgo formal.",
+        "text": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Prompt__User_Message_', ``, 'string') }}",
+        "options": {
+          "systemMessage": "={{\n\"MACROPROCESO: \" + ($('Code - Determinar Estado').item.json.macroproceso_activo ?? \"NO DEFINIDO\") + \"\\n\" +\n\"SUBPROCESO BAJO AUDITORÍA: \" + ($('Code - Determinar Estado').item.json.proceso_activo ?? \"NO DEFINIDO\") + \"\\n\\n\" +\n\n\"Eres el evaluador técnico de la auditoría.\\n\" +\n\"Recibes cuatro elementos y con ellos determinas el estado de la auditoría:\\n\" +\n\"1. La declaración normativa del Agente ISO — qué dice la norma.\\n\" +\n\"2. El contexto documental del Agente Proceso — cómo debería funcionar el proceso en UNIMINUTO.\\n\" +\n\"3. La pregunta que formuló AVA.\\n\" +\n\"4. La respuesta que dio el auditado.\\n\\n\" +\n\n\"ENTIENDE TU ROL:\\n\" +\n\"No evalúas coincidencia textual. Evalúas coherencia conceptual.\\n\" +\n\"La pregunta es: ¿lo que declara el auditado es coherente con lo que exige la norma\\n\" +\n\"y con cómo está documentado el proceso en UNIMINUTO?\\n\\n\" +\n\n\"CONTROL DE FASES POR PREGUNTA:\\n\" +\n\"Cada pregunta de auditoría debe completar estas fases antes de que AVA avance a una nueva pregunta:\\n\" +\n\"FASE 1 — Comprensión: el auditado explicó qué hace el proceso y cuál es su propósito.\\n\" +\n\"FASE 2 — Control: el auditado identificó responsables, métodos e indicadores.\\n\" +\n\"FASE 3 — Coherencia: lo declarado es coherente con RAG y con la norma.\\n\" +\n\"Si alguna fase no está completa → recomienda PROFUNDIZAR con subpregunta sobre esa fase.\\n\" +\n\"Solo cuando las 3 fases estén completas → recomienda AVANZAR o EMITIR HALLAZGO.\\n\\n\" +\n\n\"CRITERIO DE FASE 1 COMPLETA:\\n\" +\n\"La Fase 1 se considera completa cuando el auditado describe AL MENOS UNO de estos elementos:\\n\" +\n\"- El propósito o razón de ser del proceso.\\n\" +\n\"- El valor que genera para UNIMINUTO o la comunidad.\\n\" +\n\"- El alcance o población que atiende.\\n\" +\n\"- El problema que resuelve.\\n\" +\n\"No se requiere que describa TODOS los elementos para completar la Fase 1.\\n\" +\n\"Una respuesta parcial pero coherente ES suficiente para marcar Fase 1 como completa.\\n\\n\" +\n\n\"CRITERIO DE FASE 2 COMPLETA:\\n\" +\n\"La Fase 2 se considera completa cuando el auditado identifica AL MENOS UNO de estos:\\n\" +\n\"- Un responsable o cargo responsable del proceso.\\n\" +\n\"- Un método, herramienta o mecanismo de control.\\n\" +\n\"- Un indicador o forma de medir el proceso.\\n\" +\n\"No se requiere que describa todos para completar la Fase 2.\\n\\n\" +\n\n\"CRITERIO DE FASE 3 COMPLETA:\\n\" +\n\"La Fase 3 se considera completa cuando:\\n\" +\n\"- Lo declarado es coherente conceptualmente con lo que RAG indica sobre el proceso.\\n\" +\n\"- No hay contradicciones estructurales entre lo dicho y la documentación.\\n\\n\" +\n\n\"CRITERIO DE HALLAZGO POR PREGUNTA:\\n\" +\n\"Al completar las 3 fases de una pregunta emite siempre una conclusión:\\n\" +\n\"- Conformidad: el auditado demostró coherencia con norma y documentación.\\n\" +\n\"- No Conformidad: brecha estructural demostrada tras completar las 3 fases.\\n\" +\n\"- Observación: riesgo identificado sin incumplimiento formal.\\n\" +\n\"- Oportunidad de Mejora: mejora sugerida sin incumplimiento.\\n\" +\n\"Prohibido emitir hallazgo sin haber completado las 3 fases de esa pregunta.\\n\\n\" +\n\n\"EVALUACIÓN DE EVIDENCIA DECLARADA SIN RAG:\\n\" +\n\"Si el auditado declara evidencia que RAG no tiene, evalúa si cumple los 4 criterios:\\n\" +\n\"- Puede describir estructura y contenido.\\n\" +\n\"- Existe responsable identificado.\\n\" +\n\"- Tiene periodicidad definida.\\n\" +\n\"- Su propósito es coherente con el requisito ISO.\\n\" +\n\"Si cumple los 4 → evidencia válida, considera como coherente.\\n\" +\n\"Si falla alguno → recomienda profundizar, NO emitir hallazgo todavía.\\n\\n\" +\n\n\"CRITERIO DE INCOHERENCIA — solo aplica cuando:\\n\" +\n\"- El auditado responde algo que NO TIENE NINGUNA RELACIÓN POSIBLE con el proceso auditado.\\n\" +\n\"- Ejemplo real de incoherencia: se pregunta por indicadores de docencia y responde sobre recetas de cocina.\\n\" +\n\"- Preguntas de aclaración como '¿con qué?' '¿cómo así?' '¿puede dar un ejemplo?' SON VÁLIDAS.\\n\" +\n\"- Respuestas cortas o confusas NO son incoherentes, son oportunidad de profundizar.\\n\" +\n\"- Ante la duda → tratar como válido y recomendar profundizar.\\n\\n\" +\n\n\"DEVUELVE SIEMPRE EN ESTE FORMATO:\\n\" +\n\"FASES COMPLETADAS: [lista cuáles de las 3 fases están completas para esta pregunta]\\n\" +\n\"FASES PENDIENTES: [lista cuáles faltan]\\n\" +\n\"COHERENCIA ISO: [coherente / brecha detectada / insuficiente — justifica brevemente]\\n\" +\n\"COHERENCIA DOCUMENTAL: [coherente / brecha detectada / sin documentación específica]\\n\" +\n\"EVIDENCIA DECLARADA: [válida / insuficiente / pendiente aclaración]\\n\" +\n\"RECOMENDACIÓN: [profundizar fase X / avanzar a nueva pregunta / emitir hallazgo]\\n\" +\n\"CONCLUSIÓN DE PREGUNTA: [solo si las 3 fases están completas — Conformidad / No Conformidad / Observación / Oportunidad de Mejora + justificación técnica]\\n\\n\" +\n\n\"PROHIBICIONES ABSOLUTAS:\\n\" +\n\"- Recomendar avanzar sin haber completado las 3 fases.\\n\" +\n\"- Emitir conclusión de pregunta sin haber completado las 3 fases.\\n\" +\n\"- Recomendar hallazgo basándose solo en ausencia de documento en RAG.\\n\" +\n\"- Evaluar coincidencia textual en lugar de coherencia conceptual.\\n\" +\n\"- Usar conocimiento externo.\\n\\n\" +\n\n\"Responde en español técnico profesional.\"\n}}",
+          "maxIterations": 3
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agentTool",
+      "typeVersion": 3,
+      "position": [
+        48,
+        208
+      ],
+      "id": "68aca2fa-2727-455b-bec4-1904420c210d",
+      "name": "agente_evaluador"
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.toolThink",
+      "typeVersion": 1.1,
+      "position": [
+        336,
+        208
+      ],
+      "id": "f1aba7ea-6ca7-4034-84f9-7756be4e15b0",
+      "name": "Think1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const outputAI = $('AI Agent Orquestador').first().json.output || '';\nconst sessionId = $('Code - Determinar Estado').first().json.sessionId;\nconst fasesActuales = $('Code - Determinar Estado').first().json.fases_completadas || [];\n\n// Detectar si el evaluador completó alguna fase en este intercambio\nlet fasesNuevas = [...fasesActuales];\n\nif (outputAI.includes('FASE 1') || outputAI.toLowerCase().includes('comprensión')) {\n  if (!fasesNuevas.includes('FASE_1')) fasesNuevas.push('FASE_1');\n}\nif (outputAI.includes('FASE 2') || outputAI.toLowerCase().includes('verificación de control')) {\n  if (!fasesNuevas.includes('FASE_2')) fasesNuevas.push('FASE_2');\n}\nif (outputAI.includes('FASE 3') || outputAI.toLowerCase().includes('coherencia documental')) {\n  if (!fasesNuevas.includes('FASE_3')) fasesNuevas.push('FASE_3');\n}\n\n// Detectar si AVA avanzó a nueva cláusula — resetear fases\nconst avanzoClausiula = outputAI.toLowerCase().includes('avanzamos a la cláusula') ||\n                        outputAI.toLowerCase().includes('siguiente cláusula');\n\nif (avanzoClausiula) {\n  fasesNuevas = [];\n}\n\n// Extraer número de cláusula del output si aparece\nconst clausulaMatch = outputAI.match(/cláusula\\s+(\\d+\\.\\d+(?:\\.\\d+)?)/i);\nconst clausulaDetectada = clausulaMatch ? clausulaMatch[1] : \n  $('Code - Determinar Estado').first().json.clausula_actual;\n\n// Actualizar en Supabase\nawait this.helpers.httpRequest({\n  method: 'PATCH',\n  url: 'https://hzgoxdpvlvzxzwoefeui.supabase.co/rest/v1/chat_sessions',\n  headers: {\n    'Content-Type': 'application/json',\n    'apikey': 'sb_secret_tR7D4YA3ds7CC9OSLM9CPQ_aMZJiPpZ',\n    'Authorization': 'Bearer sb_secret_tR7D4YA3ds7CC9OSLM9CPQ_aMZJiPpZ',\n    'Prefer': 'return=minimal'\n  },\n  body: {\n    clausula_actual: clausulaDetectada,\n    fases_completadas: fasesNuevas\n  },\n  qs: { session_id: `eq.${sessionId}` },\n  json: true\n});\n\nreturn [{\n  json: {\n    ...$('AI Agent Orquestador').first().json,\n    clausula_actual: clausulaDetectada,\n    fases_completadas: fasesNuevas\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        -16
+      ],
+      "id": "6a14318d-4033-4a0f-b02f-1cf470b69f49",
+      "name": "Actualizar Contador Fases"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Code - Determinar Estado').item.json.sessionId }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [
+        -992,
+        400
+      ],
+      "id": "b3766ab1-42ab-4ce7-b490-77e75d13be28",
+      "name": "Postgres Chat Memory",
+      "credentials": {
+        "postgres": {
+          "id": "lEbqqual6SIFS69b",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatear Respuesta": {
+      "main": [
+        []
+      ]
+    },
+    "Postgres - Leer Sesión": {
+      "main": [
+        [
+          {
+            "node": "Code - Determinar Estado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Guardar/Actualizar Sesión": {
+      "main": [
+        [
+          {
+            "node": "AI Agent Orquestador",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - ¿Proceso válido?": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Guardar/Actualizar Sesión",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respuesta - Proceso Inválido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Determinar Estado": {
+      "main": [
+        [
+          {
+            "node": "IF - ¿Proceso válido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respuesta - Proceso Inválido": {
+      "main": [
+        []
+      ]
+    },
+    "Guardar Audit Trail": {
+      "main": [
+        [
+          {
+            "node": "Actualizar Contador Fases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings OpenAI": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Vector Store ISO",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent Orquestador",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings OpenAI1": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Vector Store Proceso",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector Store Proceso": {
+      "ai_tool": [
+        [
+          {
+            "node": "agente_proceso",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector Store ISO": {
+      "ai_tool": [
+        [
+          {
+            "node": "agente_iso",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Leer Sesión",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        []
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "agente_iso",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model2": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "agente_proceso",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model3": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "agente_evaluador",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Think": {
+      "ai_tool": [
+        [
+          {
+            "node": "agente_evaluador",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent Orquestador": {
+      "main": [
+        [
+          {
+            "node": "Guardar Audit Trail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "agente_iso": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent Orquestador",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "agente_proceso": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent Orquestador",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "agente_evaluador": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent Orquestador",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Think1": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent Orquestador",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Actualizar Contador Fases": {
+      "main": [
+        [
+          {
+            "node": "Formatear Respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent Orquestador",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "3213c361-7fa1-40c3-babf-3f1fd17f887f",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "26af3cc711839c8f71838eb95e7755eb1c2859fa48dbcd6aa4bc5ba416e8cf7c"
+  },
+  "id": "lnHzPG228oEfu2PafG50J",
+  "tags": []
+}

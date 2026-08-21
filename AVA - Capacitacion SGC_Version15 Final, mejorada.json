@@ -1,0 +1,690 @@
+{
+  "name": "AVA - Capacitacion SGC v5",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ava-capacitacion",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "26210b08-74a4-40a7-9207-e3dca578d51e",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2192,
+        3296
+      ],
+      "webhookId": "99abeafc-5c82-43d0-ada5-1b33d97658a8"
+    },
+    {
+      "parameters": {
+        "jsCode": "const sessionId =\n  $json.body?.sessionId ??\n  $json.sessionId ??\n  $json.body?.sessionid ??\n  $json.sessionid;\n\nconsole.log('sessionId recibido:', sessionId);\n\nif (!sessionId) {\n  throw new Error('sessionId no esta llegando');\n}\n\nreturn [{ json: { ...$json, sessionId } }];"
+      },
+      "id": "4249f9dd-4639-4e4d-9763-064e2e1dfb35",
+      "name": "Code in JavaScript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1968,
+        3296
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM chat_sessions WHERE session_id = $1;",
+        "options": {
+          "queryReplacement": "={{$json.body.sessionId ?? $json.sessionId}}"
+        }
+      },
+      "id": "cb0390e9-a40c-450f-8b25-93366ce36973",
+      "name": "Postgres - Leer Sesion",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        -1744,
+        3296
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "o4VMkeLoGr6zlPHj",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst lecturaDB = $(\"Postgres - Leer Sesion\").first().json || {};\nconst rawJson = $(\"Code in JavaScript\").first().json;\nconst body = rawJson.body || rawJson;\n\nfunction sanitize(str) {\n  if (!str) return '';\n  return str\n    .replace(/[\\u2018\\u2019\\u201A\\u201B\\u201C\\u201D\\u201E\\u201F]/g, function(c) {\n      return ['\\u2018','\\u2019','\\u201A','\\u201B'].includes(c) ? \"'\" : '\"';\n    })\n    .replace(/[\\u2013\\u2014]/g, '-')\n    .replace(/[\\u2026]/g, '...');\n}\n\nconst rawMessage = (body.message || '').trim();\nconst message = sanitize(rawMessage);\nconst sessionId = rawJson.sessionId || body.sessionId;\nconst category = body.category || 'general';\nconst moduloActual = lecturaDB.modulo_actual || 0;\n\nreturn [{ json: {\n  sessionId,\n  category,\n  sanitizedMessage: message,\n  moduloActual,\n  _debug_message: rawMessage\n}}];\n"
+      },
+      "id": "309bb6c7-2a16-4ffd-97ef-c77e3935016a",
+      "name": "Code - Determinar Estado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1520,
+        3296
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO chat_sessions (session_id, category, modulo_actual)\nVALUES ($1, $2, 0)\nON CONFLICT (session_id)\nDO UPDATE SET\n  category = EXCLUDED.category,\n  ultimo_mensaje = NOW();",
+        "options": {
+          "queryReplacement": "={{ [\n  $(\"Code - Determinar Estado\").item.json.sessionId,\n  $(\"Code - Determinar Estado\").item.json.category\n] }}"
+        }
+      },
+      "id": "344255f8-be46-4653-833c-4fa39d0bf107",
+      "name": "Postgres - Guardar/Actualizar Sesion",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        -1296,
+        3296
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "o4VMkeLoGr6zlPHj",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $(\"Inject RAG + Build Prompt\").first().json.agentInput }}",
+        "options": {
+          "systemMessage": "Tu nombre es AVA, facilitadora de formacion del Sistema de Gestion de Calidad (SGC) de UNIMINUTO. Tu proposito es acompañar a los colaboradores en su aprendizaje de manera clara, cercana y motivadora.\n\nCuando el input incluye un bloque [CONTEXTO OFICIAL UNIMINUTO], ese es el unico texto que debes usar para mision, vision, politica de calidad, objetivos y glosario. Reproducelo con fidelidad, sin inventar ni parafrasear los datos institucionales.\n\nCuando el input incluye [Modulo X de 6], estas presentando ese modulo especifico. Siguelo con naturalidad, como si fueras una facilitadora en un taller presencial.\n\nCuando el usuario hace una pregunta libre, respondela con conocimiento sobre el SGC y la ISO 9001, y guialo de vuelta al modulo en curso si tiene sentido.\n\nTono: profesional pero cercano. Usa primera persona del plural cuando hables de UNIMINUTO (\"nuestra politica\", \"nuestros objetivos\"). Tutea al usuario.\n\nFormato: usa negrillas para terminos clave, listas cuando haya varios puntos, y cierra siempre con UNA sola pregunta para mantener el dialogo.\n\nResponde siempre en español con tildes y buena ortografia.\n\nSi te preguntan algo fuera del SGC o de UNIMINUTO, responde: \"Eso esta fuera de mi especialidad como facilitadora del SGC. ¿Seguimos con el modulo?\" \n\nRecuerda que te llamas AVA, ese nombre debes decirlo si te lo preguntan, si te preguntan que genero tienes, especifica que eres una maquina y que no tienes genero.",
+          "maxIterations": 10
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1632,
+        3456
+      ],
+      "id": "583cd848-e040-4c0b-81b4-166a58796e6f",
+      "name": "AI Agent Capacitacion"
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {
+          "maxTokens": 1500,
+          "temperature": 0.7
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        752,
+        3808
+      ],
+      "id": "527a6445-520e-4811-b6ee-475978dc8fcd",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "R0qe8FpCYVZIF6JL",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $(\"Code - Determinar Estado\").item.json.sessionId }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1,
+      "position": [
+        928,
+        3824
+      ],
+      "id": "8c4d8bb9-ba8e-42da-b67e-58007280d293",
+      "name": "Postgres Chat Memory",
+      "credentials": {
+        "postgres": {
+          "id": "o4VMkeLoGr6zlPHj",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit_trail (\n  session_id, pregunta, proceso_consultado, subproceso_consultado,\n  categoria, respuesta, documentos_iso, documentos_proceso, timestamp\n) VALUES (\n  $1, $2, '', '', $3, $4, '[]', '[]', NOW()\n);",
+        "options": {
+          "queryReplacement": "={{ [\n  $(\"Sanitize AI Output\").item.json.sessionId,\n  $(\"Sanitize AI Output\").item.json.messageClean.replace(/'/g, \"''\"),\n  $(\"Sanitize AI Output\").item.json.category,\n  $(\"Sanitize AI Output\").item.json.aiOutputClean.replace(/'/g, \"''\")\n] }}"
+        }
+      },
+      "id": "00bb18e6-627f-4163-b027-5562eb3766ea",
+      "name": "Guardar Audit Trail",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        3456
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "o4VMkeLoGr6zlPHj",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nfunction sanitize(str) {\n  if (!str) return '';\n  return str\n    .replace(/[\\u2018\\u2019\\u201A\\u201B]/g, \"'\")\n    .replace(/[\\u201C\\u201D\\u201E\\u201F]/g, '\"')\n    .replace(/[\\u2013\\u2014]/g, '-')\n    .replace(/[\\u2026]/g, '...');\n}\n\nlet respuesta = '';\nlet sessionId = '';\n\n// Ruta A: viene despues de Guardar Audit Trail (conversacion con agente)\n// El output limpio esta en Sanitize AI Output, accesible por nombre de nodo\ntry {\n  const sanitized = $(\"Sanitize AI Output\").first().json;\n  if (sanitized && sanitized.aiOutputClean) {\n    respuesta = sanitize(sanitized.aiOutputClean);\n    sessionId = sanitized.sessionId || '';\n  }\n} catch(e) {}\n\n// Ruta B: viene de Welcome Message directamente\nif (!respuesta) {\n  try {\n    const welcome = $(\"Welcome Message\").first().json;\n    if (welcome && welcome.respuesta) {\n      respuesta = sanitize(welcome.respuesta);\n      sessionId = welcome.sessionId || '';\n    }\n  } catch(e) {}\n}\n\nif (!respuesta) respuesta = 'Hubo un problema al generar la respuesta. Por favor intenta de nuevo.';\n\nreturn [{ json: { tipo: 'respuesta_rag', respuesta, sessionId, proceso: null } }];\n"
+      },
+      "id": "36b00b40-9036-48d0-9b7d-10960254e7db",
+      "name": "Formatear Respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2736,
+        3072
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nfunction sanitize(str) {\n  if (!str) return '';\n  return str\n    .replace(/[\\u2018\\u2019\\u201A\\u201B]/g, \"'\")\n    .replace(/[\\u201C\\u201D\\u201E\\u201F]/g, '\"')\n    .replace(/[\\u2013\\u2014]/g, '-')\n    .replace(/[\\u2026]/g, '...');\n}\n\nconst aiOutput = $(\"AI Agent Capacitacion\").first().json.output || '';\nconst sessionId = $(\"Code - Determinar Estado\").first().json.sessionId;\nconst message = $(\"Code - Determinar Estado\").first().json.sanitizedMessage;\nconst category = $(\"Code - Determinar Estado\").first().json.category;\n\nreturn [{ json: {\n  aiOutputClean: sanitize(aiOutput),\n  sessionId,\n  messageClean: sanitize(message),\n  category\n}}];\n"
+      },
+      "id": "74988579-c1bd-4bed-b883-8884c23c2046",
+      "name": "Sanitize AI Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2208,
+        3456
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const lecturaDB = $(\"Postgres - Leer Sesion\").first().json || {};\nconst isNew = !lecturaDB.session_id;\nconst sessionId = $(\"Code - Determinar Estado\").first().json.sessionId;\nconst sanitizedMessage = $(\"Code - Determinar Estado\").first().json.sanitizedMessage;\nconst category = $(\"Code - Determinar Estado\").first().json.category;\nreturn [{ json: { sessionId, sanitizedMessage, category, isNewSession: isNew } }];"
+      },
+      "id": "0f18334c-d896-4a2e-98c1-b284378a0085",
+      "name": "Detect New Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1072,
+        3296
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-new-session",
+              "leftValue": "={{ $json.isNewSession }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "59bd8ae6-6010-4e2e-8db7-0ad7877ccf6c",
+      "name": "Is New Session?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -848,
+        3296
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst sessionId = $(\"Detect New Session\").first().json.sessionId;\nconst saludo = \"Hola, bienvenido/a a la capacitacion del SGC de UNIMINUTO.\\n\\nSoy **AVA**, tu facilitadora para este recorrido. Vamos a explorar juntos los 6 modulos del Sistema de Gestion de Calidad: desde el contexto institucional de UNIMINUTO hasta como la calidad se vive en el trabajo diario.\\n\\n¿Listo/a para comenzar con el **Modulo 1 - Contexto de UNIMINUTO**?\";\n\nreturn [{ json: {\n  tipo: 'respuesta_directa',\n  respuesta: saludo,\n  sessionId,\n  moduloObjetivo: 0\n}}];\n"
+      },
+      "id": "1506390d-6277-4a7b-9977-6c1e25e805a3",
+      "name": "Welcome Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -336,
+        3072
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst data = $(\"Detect New Session\").first().json;\nconst sessionDB = $(\"Postgres - Leer Sesion\").first().json || {};\nconst rawMsg = (data.sanitizedMessage || '').trim();\nconst raw = rawMsg.toLowerCase().replace(/[¿?¡!.,;:]/g, '').trim();\nconst sessionId = data.sessionId;\nconst category = data.category;\n\nconst moduloActual = (sessionDB.modulo_actual !== undefined && sessionDB.modulo_actual !== null)\n  ? parseInt(sessionDB.modulo_actual) : 0;\n\n// ── Detectar confirmacion ──────────────────────────────────\nconst confirmaciones = [\n  'si','sí','ok','vale','dale','listo','lista','claro','vamos','sigamos',\n  'continuemos','continua','continúa','siguiente','avanza','empecemos',\n  'comenzemos','adelante','perfecto','entendido','de acuerdo','ya','bueno',\n  'comencemos','sigue','yes','va','continuamos','bien',\n  'siguiente modulo','proximo modulo','avancemos'\n];\nconst palabras = raw.split(/\\s+/);\nconst esConfirmacion =\n  confirmaciones.some(c => raw === c) ||\n  (palabras.length <= 7 && palabras.some(p => confirmaciones.includes(p))) ||\n  (raw.includes('modulo') && (raw.includes('sig') || raw.includes('continu') || raw.includes('avanz'))) ||\n  raw.includes('continuar') ||\n  raw.includes('quiero continuar') ||\n  raw.includes('sigamos con');\n\n// ── Determinar modulo objetivo ────────────────────────────\nlet moduloObjetivo;\nif (esConfirmacion && moduloActual < 6) moduloObjetivo = moduloActual + 1;\nelse if (esConfirmacion && moduloActual === 6) moduloObjetivo = 6;\nelse moduloObjetivo = moduloActual === 0 ? 1 : moduloActual;\n\n// ── Modulos que necesitan RAG (solo cuando es confirmacion/avance) ─\nconst modulosConRAG = [1, 3, 4, 5];\nconst necesitaRAG = modulosConRAG.includes(moduloObjetivo) && esConfirmacion;\n\n// ── Query por modulo para el vector search ────────────────\nconst ragQueryMap = {\n  1: 'mision vision UNIMINUTO institucion educacion superior',\n  3: 'politica de calidad UNIMINUTO SGC',\n  4: 'objetivos de calidad UNIMINUTO metas',\n  5: 'glosario terminos clave SGC calidad definiciones'\n};\nconst ragQuery = necesitaRAG ? ragQueryMap[moduloObjetivo] : '';\n\n// ── Instruccion por modulo (sin RAG aun, se inyecta despues) ─\nconst instruccionModulo = {\n  1: 'Presenta la mision y vision de UNIMINUTO usando EXACTAMENTE el texto del contexto adjunto. Agrega 1 oracion propia de introduccion. Cierra preguntando si quedo claro.',\n  2: 'Explica con tus propias palabras que es un Sistema de Gestion de Calidad, su proposito, alcance en UNIMINUTO y los beneficios para los colaboradores. Maximo 3 parrafos. Cierra preguntando si quedo claro.',\n  3: 'Presenta la Politica de Calidad de UNIMINUTO usando EXACTAMENTE el texto del contexto adjunto. Agrega 1 parrafo breve sobre su significado practico. Cierra preguntando si quedo claro.',\n  4: 'Lista TODOS los Objetivos de Calidad con nombre y descripcion exactos del contexto adjunto. No omitas ninguno. Cierra preguntando si quedo claro.',\n  5: 'Presenta los terminos clave del SGC con sus definiciones oficiales del contexto adjunto. Organiza en lista. Cierra preguntando si quedo claro.',\n  6: 'Explica con 2 o 3 ejemplos concretos como aplica la calidad en el trabajo diario de un colaborador UNIMINUTO. Cercano y practico. Cierra felicitando al usuario por completar la capacitacion.'\n};\n\nlet promptBase;\nif (esConfirmacion && moduloActual < 6) {\n  promptBase = `[Modulo ${moduloObjetivo} de 6]\\n\\nInstruccion: ${instruccionModulo[moduloObjetivo]}`;\n} else if (esConfirmacion && moduloActual === 6) {\n  promptBase = 'El usuario completo los 6 modulos del SGC. Felicitalo calurosamente y animalo a aplicar lo aprendido en su trabajo diario en UNIMINUTO.';\n} else {\n  promptBase = `[Modulo en curso: ${moduloActual}]\\nEl colaborador pregunta: ${rawMsg}\\nResponde enfocado en el SGC de UNIMINUTO. Si es una duda sobre el modulo actual, resuelvela y vuelve a invitarlo a continuar.`;\n}\n\nreturn [{ json: { sessionId, category, promptBase, moduloObjetivo, necesitaRAG, ragQuery, rawMsg } }];\n"
+      },
+      "id": "eb0aebeb-78c8-4e55-8a2d-fd75971fb821",
+      "name": "Prepare Agent Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -336,
+        3440
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE chat_sessions SET modulo_actual = $2 WHERE session_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [\n  $(\"Code - Determinar Estado\").first().json.sessionId,\n  $(\"Prepare Agent Input\").first().json.moduloObjetivo\n] }}"
+        }
+      },
+      "id": "8ec45d48-8954-4eed-8a55-7e5065644afa",
+      "name": "Actualizar Modulo DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        3456
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "o4VMkeLoGr6zlPHj",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-necesita-rag",
+              "leftValue": "={{ $json.necesitaRAG }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        48,
+        3440
+      ],
+      "id": "d56c96d0-b048-47ff-8537-39264a1b1566",
+      "name": "¿Necesita RAG?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: \"text-embedding-3-small\", input: $json.ragQuery }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        368,
+        3280
+      ],
+      "id": "a1af58f4-f647-4d95-98eb-9affc2f220e7",
+      "name": "HTTP - Generar Embedding",
+      "credentials": {
+        "openAiApi": {
+          "id": "R0qe8FpCYVZIF6JL",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://hzgoxdpvlvzxzwoefeui.supabase.co/rest/v1/rpc/match_documents_contexto_uniminuto",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query_embedding: $json.data[0].embedding, match_count: 4, filter: {} }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        640,
+        3280
+      ],
+      "id": "2de5f9eb-2290-4089-b7f3-3e645f8476d5",
+      "name": "HTTP - Fetch RAG Supabase",
+      "credentials": {
+        "supabaseApi": {
+          "id": "qjfYSLzeQlgzWGnZ",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst prepareData = $(\"Prepare Agent Input\").first().json;\nconst { promptBase, moduloObjetivo, necesitaRAG, sessionId, category } = prepareData;\n\nlet contextoRAG = '';\n\nif (necesitaRAG) {\n  try {\n    const docs = $(\"HTTP - Fetch RAG Supabase\").first().json;\n    if (Array.isArray(docs) && docs.length > 0) {\n      // docs viene ordenado por similarity desc desde la RPC\n      // filtramos similarity > 0.5 para no incluir docs irrelevantes\n      const relevantes = docs.filter(d => (d.similarity || 0) > 0.5);\n      const fuente = relevantes.length > 0 ? relevantes : docs.slice(0, 3);\n      contextoRAG = fuente.map(d => d.content || '').filter(Boolean).join('\\n\\n');\n    }\n  } catch(e) {\n    contextoRAG = '';\n  }\n}\n\nconst bloqueRAG = contextoRAG\n  ? `\\n\\n[CONTEXTO OFICIAL UNIMINUTO - reproduce este texto con fidelidad]:\\n${contextoRAG}`\n  : '';\n\nconst agentInput = `${promptBase}${bloqueRAG}`;\n\nreturn [{ json: { sessionId, category, agentInput, moduloObjetivo } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        3456
+      ],
+      "id": "07009412-7918-494a-a417-9957ae0171b9",
+      "name": "Inject RAG + Build Prompt"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nDELETE FROM n8n_chat_histories\nWHERE session_id = $1\n  AND (message::jsonb->>'role' = 'tool'\n    OR (\n      message::jsonb->>'role' = 'assistant'\n      AND message::jsonb->'tool_calls' IS NOT NULL\n    )\n  );\n",
+        "options": {
+          "queryReplacement": "={{ [$('Inject RAG + Build Prompt').first().json.sessionId] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        3456
+      ],
+      "id": "e81a645c-9ce5-43fe-a585-68b3588913d8",
+      "name": "Limpiar Memoria Corrupta",
+      "credentials": {
+        "postgres": {
+          "id": "o4VMkeLoGr6zlPHj",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Leer Sesion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Leer Sesion": {
+      "main": [
+        [
+          {
+            "node": "Code - Determinar Estado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Determinar Estado": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Guardar/Actualizar Sesion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Guardar/Actualizar Sesion": {
+      "main": [
+        [
+          {
+            "node": "Detect New Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent Capacitacion": {
+      "main": [
+        [
+          {
+            "node": "Actualizar Modulo DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar Audit Trail": {
+      "main": [
+        [
+          {
+            "node": "Formatear Respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent Capacitacion",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent Capacitacion",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize AI Output": {
+      "main": [
+        [
+          {
+            "node": "Guardar Audit Trail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect New Session": {
+      "main": [
+        [
+          {
+            "node": "Is New Session?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is New Session?": {
+      "main": [
+        [
+          {
+            "node": "Welcome Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Agent Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Welcome Message": {
+      "main": [
+        [
+          {
+            "node": "Formatear Respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Agent Input": {
+      "main": [
+        [
+          {
+            "node": "¿Necesita RAG?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Actualizar Modulo DB": {
+      "main": [
+        [
+          {
+            "node": "Sanitize AI Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Necesita RAG?": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Generar Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Inject RAG + Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Generar Embedding": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Fetch RAG Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Fetch RAG Supabase": {
+      "main": [
+        [
+          {
+            "node": "Inject RAG + Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inject RAG + Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "Limpiar Memoria Corrupta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limpiar Memoria Corrupta": {
+      "main": [
+        [
+          {
+            "node": "AI Agent Capacitacion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "467c90de-9c71-4181-ac45-33a1bbb15134",
+  "meta": {
+    "instanceId": "1239598fa81151e9c1db43f6fbe7ac97b8cdaf9251daf9602f3cafee39625514"
+  },
+  "id": "LUNrSfyCL9U3FWqh",
+  "tags": []
+}

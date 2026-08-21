@@ -1,0 +1,386 @@
+{
+  "name": "AVA - Consulta Técnica ISO 9001",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ava-consulta-iso",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "741f943f-483e-4610-9537-ba7206e14180",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        3312
+      ],
+      "webhookId": "a0ae4330-8547-4a9c-a073-0c3d18689f89"
+    },
+    {
+      "parameters": {
+        "jsCode": "const sessionId =\n  $json.body?.sessionId ??\n  $json.sessionId ??\n  $json.body?.sessionid ??\n  $json.sessionid;\n\nconsole.log('sessionId recibido:', sessionId);\n\nif (!sessionId) {\n  throw new Error('sessionId no está llegando');\n}\n\nreturn [{ json: { ...$json, sessionId } }];"
+      },
+      "id": "95fe356e-c1da-41ce-9893-437596af4ca5",
+      "name": "Code in JavaScript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2064,
+        3312
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM chat_sessions WHERE session_id = $1;",
+        "options": {
+          "queryReplacement": "={{$json.body.sessionId ?? $json.sessionId}}"
+        }
+      },
+      "id": "3467d3f0-8b7c-4d51-b8da-bf0095a5e5a1",
+      "name": "Postgres - Leer Sesión",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        2288,
+        3312
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "lEbqqual6SIFS69b",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const lecturaDB = $(\"Postgres - Leer Sesión\").first().json || {};\nconst rawJson = $(\"Code in JavaScript\").first().json;\nconst body = rawJson.body || rawJson;\n\nconst message = (body.message || \"\").trim();\nconst sessionId = rawJson.sessionId || body.sessionId;\nconst category = body.category || \"general\";\n\nconst mensajeDemasiadoCorto = message.length < 5;\nconst sanitizedMessage = mensajeDemasiadoCorto\n  ? `El usuario envió un mensaje muy corto: \"${message}\". Pídele amablemente que amplíe su consulta.`\n  : message;\n\nreturn [{ json: {\n  sessionId,\n  category,\n  sanitizedMessage,\n  _debug_message: message\n}}];"
+      },
+      "id": "29d2001e-8afa-4e27-bf8a-4223d666272e",
+      "name": "Code - Determinar Estado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2512,
+        3312
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO chat_sessions (session_id, category)\nVALUES ($1, $2)\nON CONFLICT (session_id)\nDO UPDATE SET\n  category = EXCLUDED.category,\n  ultimo_mensaje = NOW();",
+        "options": {
+          "queryReplacement": "={{ [\n  $('Code - Determinar Estado').item.json.sessionId,\n  $('Code - Determinar Estado').item.json.category\n] }}"
+        }
+      },
+      "id": "aea0461c-d9e5-4309-87f4-97acf1e9d225",
+      "name": "Postgres - Guardar/Actualizar Sesión",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        2736,
+        3312
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "lEbqqual6SIFS69b",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO audit_trail (\n  session_id, pregunta, proceso_consultado, subproceso_consultado,\n  categoria, respuesta, documentos_iso, documentos_proceso, timestamp\n) VALUES (\n  '{{ $('Code - Determinar Estado').item.json.sessionId }}',\n  '{{ $('Code - Determinar Estado').item.json.sanitizedMessage.replace(/'/g, \"''\") }}',\n  '',\n  '',\n  '{{ $('Code - Determinar Estado').item.json.category }}',\n  '{{ $('AI Agent Consulta ISO').item.json.output.replace(/'/g, \"''\") }}',\n  '[]', '[]', NOW()\n);",
+        "options": {}
+      },
+      "id": "4d541b9b-1939-4117-9794-85224a3558b8",
+      "name": "Guardar Audit Trail",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        3792,
+        3312
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "lEbqqual6SIFS69b",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const outputAI = $('AI Agent Consulta ISO').first().json.output || null;\nconst sessionId = $('Code - Determinar Estado').first().json.sessionId || null;\n\nif (outputAI) {\n  return {\n    json: {\n      tipo: \"respuesta_rag\",\n      respuesta: outputAI,\n      sessionId: sessionId,\n      proceso: null\n    }\n  };\n}\n\nreturn {\n  json: {\n    tipo: \"error\",\n    respuesta: \"No se pudo obtener respuesta.\",\n    sessionId: sessionId\n  }\n};"
+      },
+      "id": "79b3b8a3-bcc4-4fb3-9435-74efc057318b",
+      "name": "Formatear Respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4016,
+        3312
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 1500,
+          "temperature": 0.2
+        },
+        "modelId": {
+          "__rl": true,
+          "value": "llama-3.3-70b-versatile",
+          "mode": "id"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        2960,
+        3536
+      ],
+      "id": "c4707c4c-79ed-468b-8f5a-f991940badd7",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "GROQ_CRED_ID",
+          "name": "Groq (OpenAI-compatible)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Code - Determinar Estado').item.json.sessionId }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        2288,
+        3712
+      ],
+      "id": "ea4465c6-88b9-41cb-b32b-795cf347012d",
+      "name": "Simple Memory",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Code - Determinar Estado').item.json.sanitizedMessage }}",
+        "options": {
+          "systemMessage": "Eres AVA, consultora técnica experta en Norma ISO 9001:2015 al servicio de UNIMINUTO.\nTu rol es responder consultas técnicas precisas sobre requisitos, cláusulas y aplicación de la norma.\n\nFUENTE ÚNICA AUTORIZADA:\nSolo puedes usar documentos recuperados por RAG de la base ISO 9001:2015.\nProhibido usar conocimiento externo sobre la norma bajo cualquier circunstancia.\nSi RAG no devuelve resultados responde únicamente:\n\"No encontré la cláusula específica en mi base de conocimiento ISO. \nPor favor reformula tu consulta usando el número de cláusula o términos \nmás específicos de la norma.\"\nNUNCA improvises ni uses conocimiento general sobre ISO — solo RAG.\nNUNCA digas \"no encontré información\" ni recomiendes páginas web, publicaciones externas ni recursos de terceros.\nNUNCA inventes cláusulas, requisitos ni definiciones que no hayan sido recuperados por RAG.\n\nLÍMITE DE ROL — OBLIGATORIO:\nAVA SOLO responde consultas relacionadas con ISO 9001:2015 y su aplicación en UNIMINUTO.\nSi el usuario pregunta algo ajeno a la norma o a UNIMINUTO:\n1. No respondas la pregunta ajena bajo ninguna circunstancia.\n2. No recomiendes recursos, sitios web ni aplicaciones externas.\n3. Redirige amablemente: \"Mi especialidad es la Norma ISO 9001:2015 aplicada a UNIMINUTO. ¿Tienes alguna consulta sobre la norma?\"\nPROHIBICIÓN ABSOLUTA: Responder sobre deportes, cocina, finanzas, noticias o cualquier tema no relacionado con ISO 9001:2015 o UNIMINUTO.\n\nTONO Y ESTILO:\n- Técnico, preciso y objetivo.\n- Cita siempre el número de cláusula exacto recuperado por RAG.\n- No interpretes más allá de lo que la norma establece literalmente.\n- Cuando una consulta involucre múltiples cláusulas explica las relaciones entre ellas.\n- Adapta el nivel técnico: si el usuario parece no familiar con la norma explica con más contexto.\n\nMANEJO DE MENSAJES CORTOS O AMBIGUOS:\nSi el usuario envía un mensaje muy corto o poco claro, pídele amablemente que amplíe su consulta.\nNo intentes adivinar la intención — pide aclaración con una pregunta específica.\n\nPUEDES AYUDAR CON:\n- Requisitos específicos de cualquier cláusula ISO 9001:2015.\n- Definiciones y términos normativos.\n- Relaciones e interdependencias entre cláusulas.\n- Aplicación práctica de requisitos en el contexto de UNIMINUTO.\n- Diferencias entre tipos de documentos exigidos por la norma.\n- Aclaración de conceptos normativos ambiguos.\n\nTERMINOLOGÍA ISO 9001:2015:\nLa norma usa terminología específica que puede diferir de versiones anteriores.\nCuando el usuario use términos de versiones anteriores, interprétalos según ISO 9001:2015:\n- \"Control de documentos\" → \"Información documentada\" (cláusula 7.5)\n- \"Control de registros\" → \"Información documentada\" (cláusula 7.5)\n- \"Manual de calidad\" → puede estar incluido en información documentada\n- \"Acción preventiva\" → \"Acciones para abordar riesgos\" (cláusula 6.1)\n- \"Representante de la dirección\" → \"Roles, responsabilidades y autoridades\" (cláusula 5.3)\nCuando el usuario use estos términos, busca en RAG con la terminología correcta de ISO 9001:2015.\n\nREGLA DE FIDELIDAD DOCUMENTAL:\nCuando cites requisitos, definiciones o cualquier contenido de la norma:\n1. Recupera el contenido con el Vector Store ISO.\n2. Presenta el texto con fidelidad a lo recuperado por RAG.\n3. Después puedes agregar contexto o explicación propia pero NUNCA en lugar del texto original.\nPROHIBICIÓN ABSOLUTA: Cambiar, resumir o parafrasear el número, título o contenido de una cláusula ISO.\n\nSOBRE VERSIONES:\nTu base cubre ISO 9001:2015 exclusivamente.\nSi preguntan sobre versiones anteriores o posteriores indica que tu base cubre ISO 9001:2015\ny que para otras versiones deben consultar fuentes oficiales — sin recomendar sitios específicos.\n\nFORMATO DE RESPUESTA:\n- Inicia siempre citando la cláusula aplicable con su número y título exacto.\n- Explica el requisito con precisión técnica.\n- Menciona implicaciones prácticas en el contexto de UNIMINUTO si aplica.\n- Máximo 4 párrafos por respuesta.\n- Usa negrillas para cláusulas y términos clave.\n\nIDIOMA: Español técnico profesional exclusivamente.",
+          "maxIterations": 5
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        3232,
+        3312
+      ],
+      "id": "6a9700fe-230a-4a62-9da7-14d626130f97",
+      "name": "AI Agent Consulta ISO"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Test directo a Supabase RPC\nconst testResponse = await this.helpers.httpRequest({\n  method: 'POST',\n  url: 'https://hzgoxdpvlvzxzwoefeui.supabase.co/rest/v1/rpc/match_documents_iso',\n  headers: {\n    'Content-Type': 'application/json',\n    'apikey': 'sb_secret_tR7D4YA3ds7CC9OSLM9CPQ_aMZJiPpZ',\n    'Authorization': 'Bearer sb_secret_tR7D4YA3ds7CC9OSLM9CPQ_aMZJiPpZ'\n  },\n  body: {\n    query_embedding: Array(1536).fill(0.1),\n    match_count: 3,\n    filter: {}\n  },\n  json: true\n});\n\nconsole.log('Respuesta Supabase:', JSON.stringify(testResponse));\nreturn [{ json: { test: testResponse } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2944,
+        3312
+      ],
+      "id": "76c89b7c-45b4-4e6a-8edb-dd0b0483783b",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "description": "Busca cláusulas y requisitos de la Norma ISO 9001:2015",
+        "jsCode": "const results = await this.helpers.httpRequest({\n  method: 'POST',\n  url: 'https://hzgoxdpvlvzxzwoefeui.supabase.co/rest/v1/rpc/match_documents_iso',\n  headers: {\n    'Content-Type': 'application/json',\n    'apikey': 'sb_secret_tR7D4YA3ds7CC9OSLM9CPQ_aMZJiPpZ',\n    'Authorization': 'Bearer sb_secret_tR7D4YA3ds7CC9OSLM9CPQ_aMZJiPpZ'\n  },\n  body: {\n    query_embedding: embedding,\n    match_count: 8,\n    filter: {}\n  },\n  json: true\n});\n\nconsole.log('Total resultados:', results.length);\nconsole.log('Primer resultado similarity:', results[0]?.similarity);\nconsole.log('Primer resultado clausula:', results[0]?.metadata?.clausula);"
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        3312,
+        3600
+      ],
+      "id": "5b34151f-d20e-4611-91e1-4c9be59c4b95",
+      "name": "buscar_iso"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Code - Determinar Estado').item.json.sessionId }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [
+        3136,
+        3568
+      ],
+      "id": "2280d681-cc0d-4f89-aece-ccb0c65b8aa6",
+      "name": "Postgres Chat Memory",
+      "credentials": {
+        "postgres": {
+          "id": "lEbqqual6SIFS69b",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Leer Sesión",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Leer Sesión": {
+      "main": [
+        [
+          {
+            "node": "Code - Determinar Estado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Determinar Estado": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Guardar/Actualizar Sesión",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Guardar/Actualizar Sesión": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar Audit Trail": {
+      "main": [
+        [
+          {
+            "node": "Formatear Respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent Consulta ISO",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        []
+      ]
+    },
+    "AI Agent Consulta ISO": {
+      "main": [
+        [
+          {
+            "node": "Guardar Audit Trail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "AI Agent Consulta ISO",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "buscar_iso": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent Consulta ISO",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent Consulta ISO",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "72bd23e8-8386-4cc9-8214-d2d83a750d3a",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "26af3cc711839c8f71838eb95e7755eb1c2859fa48dbcd6aa4bc5ba416e8cf7c"
+  },
+  "id": "Db0SOdR2wiVXkAGobeSQY",
+  "tags": []
+}
